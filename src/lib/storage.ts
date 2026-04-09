@@ -12,7 +12,7 @@ export const ROOT_ID = "root";
 const TREE_KEY = "lablate_tree";
 const DOC_PREFIX = "lablate_doc_";
 
-function createDefaultTree(): PageTree {
+export function createDefaultTree(): PageTree {
   const firstPageId = crypto.randomUUID();
   return {
     [ROOT_ID]: { id: ROOT_ID, title: "Home", children: [firstPageId] },

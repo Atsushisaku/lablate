@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { PanelLeft } from "lucide-react";
 import Sidebar from "./Sidebar";
 import {
@@ -10,6 +10,7 @@ import {
   deletePageRecursive,
   ROOT_ID,
   PageTree,
+  createDefaultTree,
 } from "@/lib/storage";
 
 const WorklogEditor = dynamic(() => import("./WorklogEditor"), { ssr: false });
@@ -19,12 +20,17 @@ function getFirstPage(tree: PageTree): string {
 }
 
 export default function WorklogPage() {
-  const [tree, setTree] = useState<PageTree>(() => loadTree());
-  const [selectedId, setSelectedId] = useState<string>(() => {
-    const t = loadTree();
-    return getFirstPage(t);
-  });
+  const [mounted, setMounted] = useState(false);
+  const [tree, setTree] = useState<PageTree>(createDefaultTree);
+  const [selectedId, setSelectedId] = useState<string>("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  useEffect(() => {
+    const t = loadTree();
+    setTree(t);
+    setSelectedId(getFirstPage(t));
+    setMounted(true);
+  }, []);
 
   const updateTree = useCallback((next: PageTree) => {
     setTree(next);
@@ -75,6 +81,8 @@ export default function WorklogPage() {
   }, []);
 
   const selectedPage = tree[selectedId];
+
+  if (!mounted) return null;
 
   return (
     <div className="flex h-screen overflow-hidden bg-white">
