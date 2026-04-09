@@ -5,30 +5,21 @@ import { BlockNoteEditor, PartialBlock } from "@blocknote/core";
 import { BlockNoteView } from "@blocknote/mantine";
 import "@blocknote/core/fonts/inter.css";
 import "@blocknote/mantine/style.css";
+import { loadDoc, saveDoc } from "@/lib/storage";
 
-const STORAGE_KEY = "lablate_worklog";
-
-function loadFromStorage(): PartialBlock[] | undefined {
-  if (typeof window === "undefined") return undefined;
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (!saved) return undefined;
-  try {
-    return JSON.parse(saved) as PartialBlock[];
-  } catch {
-    return undefined;
-  }
+interface Props {
+  pageId: string;
 }
 
-export default function WorklogEditor() {
+export default function WorklogEditor({ pageId }: Props) {
   const editor = useMemo(() => {
-    const initialContent = loadFromStorage();
+    const initialContent = loadDoc(pageId);
     return BlockNoteEditor.create({ initialContent });
-  }, []);
+  }, [pageId]);
 
   const handleChange = useCallback(() => {
-    const content = editor.document;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(content));
-  }, [editor]);
+    saveDoc(pageId, editor.document as PartialBlock[]);
+  }, [editor, pageId]);
 
   useEffect(() => {
     editor.onChange(handleChange);
