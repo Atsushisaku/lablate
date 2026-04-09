@@ -8,9 +8,19 @@
   padding-right: 0 !important;
 }
 
-/* BlockNote の H1 スタイル */
+/* BlockNote の見出しスタイル（Notionに準拠したスケール） */
 .bn-editor [data-content-type="heading"][data-level="1"] {
-  font-size: 1.75rem !important;   /* ← H1のサイズ */
-  font-weight: 700 !important;     /* ← H1の太さ */
-  color: #1a1a1a !important;       /* ← H1の色 */
+  font-size: clamp(1.5rem, 2vw, 1.875rem) !important;  /* 24px〜30px */
+  font-weight: 700 !important;
+  color: #1a1a1a !important;
+}
+.bn-editor [data-content-type="heading"][data-level="2"] {
+  font-size: clamp(1.25rem, 1.5vw, 1.5rem) !important; /* 20px〜24px */
+  font-weight: 700 !important;
+  color: #1a1a1a !important;
+}
+.bn-editor [data-content-type="heading"][data-level="3"] {
+  font-size: clamp(1rem, 1.2vw, 1.25rem) !important;   /* 16px〜20px */
+  font-weight: 700 !important;
+  color: #1a1a1a !important;
 }
