@@ -103,7 +103,7 @@ export default function WorklogPage() {
       {/* メインエリア */}
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* ヘッダー */}
-        <header className="flex items-center gap-3 border-b border-gray-200 bg-white/90 backdrop-blur-sm px-4 py-3 shrink-0">
+        <header className="flex items-center gap-2 border-b border-gray-200 bg-white/90 backdrop-blur-sm px-3 py-2 shrink-0">
           <button
             onClick={() => setSidebarOpen((v) => !v)}
             className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100"
@@ -111,16 +111,22 @@ export default function WorklogPage() {
           >
             <PanelLeft size={18} />
           </button>
-          <span className="text-sm font-medium text-gray-600 truncate">
-            {selectedPage?.title ?? ""}
-          </span>
         </header>
 
         {/* エディタ */}
         <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-3xl px-6 py-8">
+          <div className="mx-auto max-w-3xl px-3 py-8">
             {selectedPage && (
-              <WorklogEditor key={selectedId} pageId={selectedId} />
+              <>
+                <input
+                  key={selectedId}
+                  defaultValue={selectedPage.title === "無題のページ" ? "" : selectedPage.title}
+                  placeholder="無題のページ"
+                  onChange={(e) => handleRename(selectedId, e.target.value || "無題のページ")}
+                  className="w-full text-4xl font-bold text-gray-900 placeholder-gray-300 outline-none mb-4 bg-transparent"
+                />
+                <WorklogEditor key={`editor-${selectedId}`} pageId={selectedId} />
+              </>
             )}
           </div>
         </main>
