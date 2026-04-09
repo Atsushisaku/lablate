@@ -8,19 +8,32 @@
   padding-right: 0 !important;
 }
 
-/* BlockNote の見出しスタイル（Notionに準拠したスケール） */
+/* BlockNote テキストスタイル */
+.bn-editor {
+  font-size: 1rem !important;
+  line-height: 1.75 !important;
+  color: #1a1a1a !important;
+}
+
+/* 見出しスタイル */
 .bn-editor [data-content-type="heading"][data-level="1"] {
-  font-size: clamp(1.5rem, 2vw, 1.875rem) !important;  /* 24px〜30px */
+  font-size: 1.75rem !important;
   font-weight: 700 !important;
   color: #1a1a1a !important;
+  margin-top: 1.5rem !important;
+  margin-bottom: 0.5rem !important;
 }
 .bn-editor [data-content-type="heading"][data-level="2"] {
-  font-size: clamp(1.25rem, 1.5vw, 1.5rem) !important; /* 20px〜24px */
+  font-size: 1.375rem !important;
   font-weight: 700 !important;
   color: #1a1a1a !important;
+  margin-top: 1.25rem !important;
+  margin-bottom: 0.25rem !important;
 }
 .bn-editor [data-content-type="heading"][data-level="3"] {
-  font-size: clamp(1rem, 1.2vw, 1.25rem) !important;   /* 16px〜20px */
+  font-size: 1.125rem !important;
   font-weight: 700 !important;
   color: #1a1a1a !important;
+  margin-top: 1rem !important;
+  margin-bottom: 0.25rem !important;
 }
