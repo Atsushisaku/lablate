@@ -123,7 +123,8 @@ export default function WorklogPage() {
                   defaultValue={selectedPage.title === "無題のページ" ? "" : selectedPage.title}
                   placeholder="無題のページ"
                   onChange={(e) => handleRename(selectedId, e.target.value || "無題のページ")}
-                  className="w-full text-5xl font-bold text-gray-900 placeholder-gray-300 outline-none mb-4 bg-transparent"
+                  className="w-full text-5xl font-bold placeholder-gray-300 outline-none mb-4 bg-transparent"
+                  style={{ color: "#1a1a1a", fontWeight: 700 }}
                 />
                 <WorklogEditor key={`editor-${selectedId}`} pageId={selectedId} />
               </>
