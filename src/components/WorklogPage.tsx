@@ -115,7 +115,7 @@ export default function WorklogPage() {
 
         {/* エディタ */}
         <main className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-3xl px-3 py-8">
+          <div className="mx-auto max-w-3xl px-4 py-8">
             {selectedPage && (
               <>
                 <input
@@ -123,7 +123,7 @@ export default function WorklogPage() {
                   defaultValue={selectedPage.title === "無題のページ" ? "" : selectedPage.title}
                   placeholder="無題のページ"
                   onChange={(e) => handleRename(selectedId, e.target.value || "無題のページ")}
-                  className="w-full text-4xl font-bold text-gray-900 placeholder-gray-300 outline-none mb-4 bg-transparent"
+                  className="w-full text-5xl font-bold text-gray-900 placeholder-gray-300 outline-none mb-4 bg-transparent"
                 />
                 <WorklogEditor key={`editor-${selectedId}`} pageId={selectedId} />
               </>

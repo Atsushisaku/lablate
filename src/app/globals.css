@@ -1,3 +1,15 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* BlockNote の内部パディングを除去してコンテナ側で制御する */
+.bn-editor {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+/* BlockNote の H1 をページタイトルより小さくする */
+.bn-editor [data-content-type="heading"][data-level="1"] {
+  font-size: 1.75rem !important;
+  line-height: 2.25rem !important;
+}
