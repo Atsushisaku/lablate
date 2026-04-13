@@ -10,7 +10,7 @@ import {
 } from "@blocknote/react";
 import "@blocknote/core/fonts/inter.css";
 import "@blocknote/mantine/style.css";
-import { loadDoc, saveDoc } from "@/lib/storage";
+import { loadDoc, saveDoc, registerDataset } from "@/lib/storage";
 import { csvTableBlockSpec } from "./blocks/CsvTableBlock";
 import { chartBlockSpec } from "./blocks/ChartBlock";
 import { Table2, BarChart2 } from "lucide-react";
@@ -29,33 +29,49 @@ const schema = BlockNoteSchema.create({
 
 interface Props {
   pageId: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onEditorReady?: (editor: any) => void;
 }
 
-export default function WorklogEditor({ pageId }: Props) {
+export default function WorklogEditor({ pageId, onEditorReady }: Props) {
   const editor = useCreateBlockNote({
     schema,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     initialContent: (loadDoc(pageId) ?? undefined) as any,
   });
 
+  // エディタ参照を親に公開（React ライフサイクル外で実行し flushSync 衝突を回避）
   useEffect(() => {
-    editor.onChange(() => {
+    const id = setTimeout(() => onEditorReady?.(editor), 0);
+    return () => clearTimeout(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor]);
+
+  useEffect(() => {
+    const unsubscribe = editor.onChange(() => {
       saveDoc(pageId, editor.document as PartialBlock[]);
     });
+    return () => unsubscribe?.();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /** ブロックをカーソル直後に挿入する */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const insertBlock = (blockConfig: any) => {
+    // エディタ未初期化ガード
+    if (!editor?.document?.length) return;
     try {
       const pos = editor.getTextCursorPosition();
-      editor.insertBlocks([blockConfig], pos.block, "after");
+      if (pos?.block) {
+        editor.insertBlocks([blockConfig], pos.block, "after");
+      } else {
+        throw new Error("no cursor");
+      }
     } catch {
       const last = editor.document[editor.document.length - 1];
       if (last) editor.insertBlocks([blockConfig], last, "after");
     }
-    editor.focus();
+    try { editor.focus(); } catch { /* ignore */ }
   };
 
   return (
@@ -67,7 +83,7 @@ export default function WorklogEditor({ pageId }: Props) {
             e.preventDefault();
             insertBlock({
               type: "csvTable",
-              props: { datasetId: crypto.randomUUID() },
+              props: { datasetId: (() => { const id = crypto.randomUUID(); registerDataset(id); return id; })() },
             });
           }}
           className="flex items-center gap-1 text-xs px-2 py-1 rounded text-gray-500 hover:bg-gray-100"
@@ -114,7 +130,7 @@ export default function WorklogEditor({ pageId }: Props) {
                   onItemClick: () =>
                     insertBlock({
                       type: "csvTable",
-                      props: { datasetId: crypto.randomUUID() },
+                      props: { datasetId: (() => { const id = crypto.randomUUID(); registerDataset(id); return id; })() },
                     }),
                 },
                 {

@@ -2,8 +2,8 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { createReactBlockSpec } from "@blocknote/react";
-import { loadDataset, saveDataset, Dataset } from "@/lib/storage";
-import { Upload, BarChart2, ChevronDown, ChevronRight, Plus } from "lucide-react";
+import { loadDataset, saveDataset, Dataset, registerDataset } from "@/lib/storage";
+import { Upload, BarChart2, ChevronDown, ChevronRight, Plus, ExternalLink } from "lucide-react";
 
 import jspreadsheet from "jspreadsheet-ce";
 import "jspreadsheet-ce/dist/jspreadsheet.css";
@@ -152,6 +152,7 @@ function TableView({
   const fileRef      = useRef<HTMLInputElement>(null);
   const saveTimer    = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const isActiveRef  = useRef(false);
+  const mySourceId   = useRef(`block-${block.id}`);
   /** 数式編集中の矢印キーで挿入するセル参照の状態 */
   const formulaRefRef = useRef<{ x: number; y: number; start: number; end: number } | null>(null);
   /** persistData の安定参照（useEffect の deps を汚さないため） */
@@ -191,11 +192,32 @@ function TableView({
         headers: Array.from({ length: colCount }, (_, i) => colLetter(i)),
         rows,
       });
-      // グラフブロックにデータ変更を通知
-      window.dispatchEvent(new CustomEvent("lablate-dataset-change", { detail: { datasetId } }));
+      // グラフブロック・スプレッドシートタブにデータ変更を通知
+      window.dispatchEvent(new CustomEvent("lablate-dataset-change", {
+        detail: { datasetId, sourceId: mySourceId.current },
+      }));
     }, 300);
   }, [datasetId]);
   persistRef.current = persistData;
+
+  // ── 外部変更のリッスン（スプレッドシートタブからの変更を反映） ──
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.datasetId !== datasetId) return;
+      if (detail?.sourceId === mySourceId.current) return;
+      const ws = instanceRef.current;
+      if (!ws) return;
+      const ds = loadDataset(datasetId);
+      if (ds) {
+        const data = ds.rows.length > 0 ? ds.rows : [new Array(ds.headers.length).fill("")];
+        ws.setData(data);
+      }
+    };
+    window.addEventListener("lablate-dataset-change", handler);
+    return () => window.removeEventListener("lablate-dataset-change", handler);
+  }, [datasetId]);
 
   // ── アクティブ状態の追跡 ──
 
@@ -570,6 +592,17 @@ function TableView({
                 className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-600"
               >
                 <BarChart2 size={12} /> グラフ
+              </button>
+              {/* タブで開く */}
+              <button
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  registerDataset(datasetId);
+                  window.dispatchEvent(new CustomEvent("lablate-open-spreadsheet-tab", { detail: { datasetId } }));
+                }}
+                className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-600"
+              >
+                <ExternalLink size={12} /> タブで開く
               </button>
               {/* タイトル表示トグル */}
               <button
