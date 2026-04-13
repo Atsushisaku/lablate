@@ -17,13 +17,23 @@
 
 | 要素 | 採用技術 |
 |---|---|
-| フレームワーク | React |
-| ブロックエディタ | BlockNote |
-| 可視化 | Plotly.js |
+| フレームワーク | Next.js 15 + React 19 |
+| ブロックエディタ | BlockNote 0.25 |
+| テーブル | Jspreadsheet CE（MIT）|
+| 可視化 | Plotly.js（`plotly.js-dist-min`）|
 | ストレージ（暫定） | localStorage |
 | ストレージ（本番） | OneDrive / Box（Microsoft Graph API） |
 | 認証 | Microsoftアカウント（Azure AD）|
 | 配布形式 | PWA（ブラウザ動作、iPad/PC対応） |
+
+### テーブルブロックの技術選定理由
+
+スプレッドシートUIの自作を検討したが、以下の理由から **Jspreadsheet Community Edition** を採用した：
+
+- セル参照・数式エンジン・キーボードナビゲーション・範囲選択などの実装難易度が高い
+- 自作実装で flushSync（React 19）、stale closure、正規表現など継続的な問題が発生
+- Jspreadsheet CE は MIT ライセンスで Excel 互換数式を含む同等機能を提供
+- BlockNote カスタムブロックとして `useRef + useEffect` でDOMマウントする形で統合
 
 ## データ設計
 
@@ -71,8 +81,14 @@ OneDrive/
 ### フェーズ2：可視化UI追加
 **目標**：グラフ・表ブロックを追加し、PPT代替としての価値を示す
 
-- CSVを読み込んでグラフを描画できるブロック
-- 簡単な計算（集計・統計）をUIで実行できる
+- CSVを読み込んでテーブル表示・編集できるブロック（Jspreadsheet CE）
+- Excel互換数式（SUM / AVERAGE / セル参照 / 範囲指定 等）
+- 数式入力中の矢印キーによるセル参照挿入（Google Sheets 風、参照先ハイライト付き）
+- Google Sheets ライクなキーボード操作（直接入力、Delete、Ctrl+Z/Y/C/X/V/A）
+- テーブルデータからXYプロットグラフを生成（Plotly.js）
+- グラフのドラッグリサイズ（PPT風8ハンドル）
+- テーブル変更のグラフ自動反映（CustomEvent連携）
+- 詳細仕様：[PHASE2.md](./PHASE2.md)
 
 ---
 

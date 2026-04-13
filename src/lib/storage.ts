@@ -54,6 +54,36 @@ export function deleteDoc(pageId: string): void {
   localStorage.removeItem(DOC_PREFIX + pageId);
 }
 
+// ── Dataset (CSVテーブル/グラフ用データ) ──────────────────────────────
+
+export interface Dataset {
+  headers: string[];
+  rows: string[][];
+}
+
+const DATASET_PREFIX = "lablate_dataset_";
+
+export function loadDataset(id: string): Dataset | null {
+  if (typeof window === "undefined") return null;
+  const raw = localStorage.getItem(DATASET_PREFIX + id);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Dataset;
+  } catch {
+    return null;
+  }
+}
+
+export function saveDataset(id: string, data: Dataset): void {
+  localStorage.setItem(DATASET_PREFIX + id, JSON.stringify(data));
+}
+
+export function deleteDataset(id: string): void {
+  localStorage.removeItem(DATASET_PREFIX + id);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+
 /** ページとその子孫を再帰的に削除する */
 export function deletePageRecursive(tree: PageTree, pageId: string): PageTree {
   const next = { ...tree };

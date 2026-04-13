@@ -12,8 +12,10 @@
     "@blocknote/core": "^0.25.0",
     "@blocknote/mantine": "^0.25.0",
     "@blocknote/react": "^0.25.0",
+    "jspreadsheet-ce": "^5.0.4",
     "lucide-react": "^1.8.0",
     "next": "^15.3.0",
+    "plotly.js-dist-min": "^3.5.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
