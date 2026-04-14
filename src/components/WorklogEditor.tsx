@@ -11,6 +11,7 @@ import {
 import "@blocknote/core/fonts/inter.css";
 import "@blocknote/mantine/style.css";
 import { loadDoc, saveDoc, registerDataset, loadTree, ROOT_ID } from "@/lib/storage";
+import { useSyncContext } from "@/lib/storage/sync-context";
 import { csvTableBlockSpec } from "./blocks/CsvTableBlock";
 import { chartBlockSpec } from "./blocks/ChartBlock";
 import { imageBlockSpec } from "./blocks/ImageBlock";
@@ -38,6 +39,7 @@ interface Props {
 }
 
 export default function WorklogEditor({ pageId, onEditorReady }: Props) {
+  const { notifyChange } = useSyncContext();
   const editor = useCreateBlockNote({
     schema,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -54,6 +56,7 @@ export default function WorklogEditor({ pageId, onEditorReady }: Props) {
   useEffect(() => {
     const unsubscribe = editor.onChange(() => {
       saveDoc(pageId, editor.document as PartialBlock[]);
+      notifyChange(`lablate_doc_${pageId}`);
     });
     return () => unsubscribe?.();
   // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -1,8 +1,10 @@
 "use client";
 
-import { FilePlus } from "lucide-react";
+import { useRef } from "react";
+import { FilePlus, FolderOpen, FolderSync, Unplug, Download, Upload } from "lucide-react";
 import { PageTree, ROOT_ID } from "@/lib/storage";
 import PageTreeItem from "./PageTreeItem";
+import { useSyncContext } from "@/lib/storage/sync-context";
 
 interface Props {
   tree: PageTree;
@@ -22,6 +24,18 @@ export default function Sidebar({
   onDelete,
 }: Props) {
   const root = tree[ROOT_ID];
+  const { isSupported, isConnected, folderName, connect, disconnect, exportZip, importZip } = useSyncContext();
+  const importRef = useRef<HTMLInputElement>(null);
+
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const result = await importZip(file);
+    if (result.success) {
+      window.location.reload();
+    }
+    if (importRef.current) importRef.current.value = "";
+  };
 
   return (
     <aside className="flex h-full flex-col bg-gray-50 border-r border-gray-200">
@@ -54,6 +68,59 @@ export default function Sidebar({
           />
         ))}
       </nav>
+
+      {/* ── ストレージ操作 ── */}
+      <div className="border-t border-gray-200 px-3 py-2 space-y-1.5">
+        {/* フォルダ接続 */}
+        {isSupported && (
+          isConnected ? (
+            <div className="flex items-center gap-1.5 text-xs text-gray-500">
+              <FolderSync size={13} className="text-green-500 shrink-0" />
+              <span className="truncate flex-1" title={folderName ?? ""}>{folderName}</span>
+              <button
+                onClick={disconnect}
+                className="rounded p-0.5 text-gray-400 hover:text-red-500 hover:bg-gray-200 transition-colors"
+                title="切断"
+              >
+                <Unplug size={12} />
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={connect}
+              className="flex items-center gap-1.5 w-full text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded px-1.5 py-1 transition-colors"
+            >
+              <FolderOpen size={13} />
+              保存先フォルダを選択
+            </button>
+          )
+        )}
+
+        {/* エクスポート / インポート */}
+        <div className="flex items-center gap-1">
+          <button
+            onClick={exportZip}
+            className="flex items-center gap-1 flex-1 text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded px-1.5 py-1 transition-colors"
+            title="ZIPエクスポート"
+          >
+            <Download size={13} /> エクスポート
+          </button>
+          <button
+            onClick={() => importRef.current?.click()}
+            className="flex items-center gap-1 flex-1 text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded px-1.5 py-1 transition-colors"
+            title="ZIPインポート"
+          >
+            <Upload size={13} /> インポート
+          </button>
+          <input
+            ref={importRef}
+            type="file"
+            accept=".zip"
+            onChange={handleImport}
+            className="hidden"
+          />
+        </div>
+      </div>
     </aside>
   );
 }

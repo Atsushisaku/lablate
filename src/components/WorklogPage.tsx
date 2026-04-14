@@ -2,7 +2,8 @@
 
 import dynamic from "next/dynamic";
 import { useState, useCallback, useEffect, useRef } from "react";
-import { PanelLeft } from "lucide-react";
+import { PanelLeft, Loader2 } from "lucide-react";
+import { useSyncContext } from "@/lib/storage/sync-context";
 import Sidebar from "./Sidebar";
 import TabBar from "./TabBar";
 import {
@@ -38,6 +39,7 @@ export default function WorklogPage() {
   const [selectedId, setSelectedId] = useState<string>("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [tabState, setTabState] = useState<TabState>({ tabs: [], activeTabId: "" });
+  const { isConnected, status: syncStatus, notifyChange } = useSyncContext();
 
   // BlockNote エディタへの参照（「md に挿入」用）
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -86,7 +88,8 @@ export default function WorklogPage() {
   const updateTree = useCallback((next: PageTree) => {
     setTree(next);
     saveTree(next);
-  }, []);
+    notifyChange("lablate_tree");
+  }, [notifyChange]);
 
   // ── ページ選択（サイドバーから） ──
   const handleSelectPage = useCallback((pageId: string) => {
@@ -348,6 +351,24 @@ export default function WorklogPage() {
           >
             <PanelLeft size={18} />
           </button>
+          <div className="flex-1" />
+          {/* 同期ステータス */}
+          <div className="flex items-center gap-1.5 text-xs text-gray-400" title={
+            isConnected
+              ? syncStatus === "saving" ? "保存中..." : syncStatus === "loading" ? "読み込み中..." : "フォルダ同期中"
+              : "ローカルのみ"
+          }>
+            {isConnected ? (
+              syncStatus === "saving" || syncStatus === "loading" ? (
+                <Loader2 size={13} className="animate-spin text-blue-500" />
+              ) : (
+                <span className="inline-block w-2 h-2 rounded-full bg-green-400" />
+              )
+            ) : (
+              <span className="inline-block w-2 h-2 rounded-full bg-yellow-400" />
+            )}
+            <span>{isConnected ? "同期中" : "ローカル"}</span>
+          </div>
         </header>
 
         {/* タブバー */}
