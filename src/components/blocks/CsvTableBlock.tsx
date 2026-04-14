@@ -564,21 +564,6 @@ function TableView({
     <div ref={wrapperRef} className="my-2 rounded-md border border-gray-200 overflow-hidden text-sm">
       <style>{SHEET_STYLES}</style>
 
-      {/* ── タイトル入力（showTitle=true かつ展開時のみ） ── */}
-        {tableConfig.showTitle && !collapsed && (
-          <div className="px-3 py-1.5 border-b border-gray-100 bg-white">
-            <input
-              ref={titleRef}
-              value={datasetTitle}
-              onChange={(e) => handleTitleChange(e.target.value)}
-              placeholder="テーブルタイトル"
-              className="w-full text-sm font-medium outline-none bg-transparent placeholder:text-gray-300 text-gray-800"
-              onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Escape") titleRef.current?.blur(); }}
-              onMouseDown={(e) => e.stopPropagation()}
-            />
-          </div>
-        )}
-
         {/* ── カスタムツールバー ── */}
         <div className="flex items-center gap-1 px-3 py-2 bg-gray-50 border-b border-gray-200 flex-wrap">
           {/* 最小化 / 展開 */}
@@ -664,6 +649,21 @@ function TableView({
           )}
           <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={handleCsvImport} className="hidden" />
         </div>
+
+      {/* ── タイトル入力（showTitle=true かつ展開時のみ） ── */}
+        {tableConfig.showTitle && !collapsed && (
+          <div className="px-3 py-1.5 border-b border-gray-100 bg-white">
+            <input
+              ref={titleRef}
+              value={datasetTitle}
+              onChange={(e) => handleTitleChange(e.target.value)}
+              placeholder="テーブルタイトル"
+              className="w-full text-sm font-medium outline-none bg-transparent placeholder:text-gray-300 text-gray-800"
+              onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Escape") titleRef.current?.blur(); }}
+              onMouseDown={(e) => e.stopPropagation()}
+            />
+          </div>
+        )}
 
       {/* ── スプレッドシート本体 ── */}
       {!collapsed && (

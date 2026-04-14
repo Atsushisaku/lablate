@@ -59,6 +59,76 @@ export default function WorklogEditor({ pageId, onEditorReady }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ── カスタムブロック直後の Backspace でブロックが消える問題を防止 ──
+  // ProseMirror は段落先頭で Backspace すると前のノードと結合しようとするが、
+  // content:"none" のカスタムブロックは結合できないため削除されてしまう。
+  // これをキャプチャフェーズで検知し、代わりに空段落を削除するだけにする。
+  const CUSTOM_BLOCK_TYPES = new Set(["csvTable", "chart", "image", "pageLink"]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Backspace" && e.key !== "Delete") return;
+
+      try {
+        const pos = editor.getTextCursorPosition();
+        if (!pos?.block) return;
+        const currentBlock = pos.block;
+
+        if (e.key === "Backspace") {
+          // カーソルがブロック先頭かつ前のブロックがカスタムブロックの場合
+          const prev = pos.prevBlock;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          if (prev && CUSTOM_BLOCK_TYPES.has((prev as any).type)) {
+            // 現在ブロックが空テキストなら現在ブロックを削除（カスタムブロックは残す）
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const cur = currentBlock as any;
+            if (cur.type === "paragraph" && (!cur.content || cur.content.length === 0 ||
+                (cur.content.length === 1 && cur.content[0].type === "text" && cur.content[0].text === ""))) {
+              e.preventDefault();
+              e.stopPropagation();
+              editor.removeBlocks([currentBlock]);
+              return;
+            }
+            // テキストがある場合はカーソル位置を確認
+            const pmView = editor.prosemirrorView;
+            if (pmView) {
+              const { from } = pmView.state.selection;
+              const resolved = pmView.state.doc.resolve(from);
+              // 親ノードの開始位置 + 1 = テキストの先頭
+              if (from === resolved.start()) {
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+              }
+            }
+          }
+        }
+
+        if (e.key === "Delete") {
+          // カーソルがブロック末尾かつ次のブロックがカスタムブロックの場合
+          const next = pos.nextBlock;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          if (next && CUSTOM_BLOCK_TYPES.has((next as any).type)) {
+            const pmView = editor.prosemirrorView;
+            if (pmView) {
+              const { from } = pmView.state.selection;
+              const resolved = pmView.state.doc.resolve(from);
+              if (from === resolved.end()) {
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+              }
+            }
+          }
+        }
+      } catch { /* エディタ未初期化時等は無視 */ }
+    };
+
+    document.addEventListener("keydown", handler, true);
+    return () => document.removeEventListener("keydown", handler, true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor]);
+
   /** ブロックをカーソル直後に挿入する */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const insertBlock = (blockConfig: any) => {
