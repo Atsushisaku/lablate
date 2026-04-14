@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus } from "lucide-react";
+import { FilePlus } from "lucide-react";
 import { PageTree, ROOT_ID } from "@/lib/storage";
 import PageTreeItem from "./PageTreeItem";
 
@@ -25,10 +25,18 @@ export default function Sidebar({
 
   return (
     <aside className="flex h-full flex-col bg-gray-50 border-r border-gray-200">
-      <div className="px-3 pt-4 pb-2">
+      {/* ── ヘッダー（VSCode風: タイトル + ファイル作成アイコン） ── */}
+      <div className="flex items-center justify-between px-3 pt-3 pb-2">
         <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">
           ページ
         </span>
+        <button
+          onClick={() => onAddChild(ROOT_ID)}
+          className="rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 transition-colors"
+          title="新規ページ"
+        >
+          <FilePlus size={15} />
+        </button>
       </div>
 
       <nav className="flex-1 overflow-y-auto px-2 pb-2">
@@ -46,16 +54,6 @@ export default function Sidebar({
           />
         ))}
       </nav>
-
-      <div className="border-t border-gray-200 p-2">
-        <button
-          onClick={() => onAddChild(ROOT_ID)}
-          className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-gray-500 hover:bg-gray-100 hover:text-gray-700"
-        >
-          <Plus size={15} />
-          新規ページ
-        </button>
-      </div>
     </aside>
   );
 }

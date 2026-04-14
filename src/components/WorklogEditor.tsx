@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useCallback, useRef } from "react";
 import { BlockNoteSchema, defaultBlockSpecs, PartialBlock, filterSuggestionItems } from "@blocknote/core";
 import { BlockNoteView } from "@blocknote/mantine";
 import {
@@ -10,10 +10,12 @@ import {
 } from "@blocknote/react";
 import "@blocknote/core/fonts/inter.css";
 import "@blocknote/mantine/style.css";
-import { loadDoc, saveDoc, registerDataset } from "@/lib/storage";
+import { loadDoc, saveDoc, registerDataset, loadTree, ROOT_ID } from "@/lib/storage";
 import { csvTableBlockSpec } from "./blocks/CsvTableBlock";
 import { chartBlockSpec } from "./blocks/ChartBlock";
-import { Table2, BarChart2 } from "lucide-react";
+import { imageBlockSpec } from "./blocks/ImageBlock";
+import { pageLinkBlockSpec } from "./blocks/PageLinkBlock";
+import { Table2, BarChart2, ImagePlus, FileText } from "lucide-react";
 
 // ── カスタムブロックを含むスキーマ ────────────────────────────────────
 
@@ -22,6 +24,8 @@ const schema = BlockNoteSchema.create({
     ...defaultBlockSpecs,
     csvTable: csvTableBlockSpec,
     chart: chartBlockSpec,
+    image: imageBlockSpec,
+    pageLink: pageLinkBlockSpec,
   },
 });
 
@@ -74,8 +78,74 @@ export default function WorklogEditor({ pageId, onEditorReady }: Props) {
     try { editor.focus(); } catch { /* ignore */ }
   };
 
+  // ── エディタ領域へのD&D / ペーストで画像ブロックを挿入 ──
+  const editorWrapRef = useRef<HTMLDivElement>(null);
+
+  const handleImageFile = useCallback((file: File | Blob) => {
+    insertBlock({ type: "image", props: { imageId: "" } });
+    // 挿入直後のブロックに画像を渡すため、カスタムイベントで通知
+    // → ImageBlock 側は props.imageId が空なので D&D ゾーンが表示される
+    // ここでは空の imageBlock を挿入し、ユーザーがそこにファイルを渡す形にする
+    // 代わりに、直接 IndexedDB に保存してブロックを更新する
+    (async () => {
+      const { compressImage } = await import("@/lib/storage/image-store");
+      const { imageStore } = await import("@/lib/storage/image-store");
+      const id = crypto.randomUUID();
+      const { blob, width, height } = await compressImage(file);
+      const meta = {
+        id,
+        name: file instanceof File ? file.name : "image",
+        mimeType: blob.type,
+        width, height,
+        size: blob.size,
+        createdAt: new Date().toISOString(),
+      };
+      await imageStore.save(id, blob, meta);
+      // 最後に挿入されたブロックを見つけて更新
+      const doc = editor.document;
+      for (let i = doc.length - 1; i >= 0; i--) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const b = doc[i] as any;
+        if (b.type === "image" && !b.props?.imageId) {
+          editor.updateBlock(b, { props: { imageId: id } });
+          break;
+        }
+      }
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editor]);
+
+  const onEditorDrop = useCallback((e: React.DragEvent) => {
+    const file = e.dataTransfer.files[0];
+    if (file?.type.startsWith("image/")) {
+      e.preventDefault();
+      e.stopPropagation();
+      handleImageFile(file);
+    }
+  }, [handleImageFile]);
+
+  useEffect(() => {
+    const el = editorWrapRef.current;
+    if (!el) return;
+    const handler = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (const item of items) {
+        if (item.type.startsWith("image/")) {
+          e.preventDefault();
+          e.stopPropagation();
+          const file = item.getAsFile();
+          if (file) handleImageFile(file);
+          return;
+        }
+      }
+    };
+    el.addEventListener("paste", handler, true);
+    return () => el.removeEventListener("paste", handler, true);
+  }, [handleImageFile]);
+
   return (
-    <div>
+    <div ref={editorWrapRef} onDrop={onEditorDrop} onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}>
       {/* 挿入ツールバー */}
       <div className="flex items-center gap-1 px-1 mb-1">
         <button
@@ -105,6 +175,20 @@ export default function WorklogEditor({ pageId, onEditorReady }: Props) {
         >
           <BarChart2 size={13} />
           グラフ
+        </button>
+        <button
+          onMouseDown={(e) => {
+            e.preventDefault();
+            insertBlock({
+              type: "image",
+              props: { imageId: "" },
+            });
+          }}
+          className="flex items-center gap-1 text-xs px-2 py-1 rounded text-gray-500 hover:bg-gray-100"
+          title="画像を挿入（または / メニュー）"
+        >
+          <ImagePlus size={13} />
+          画像
         </button>
       </div>
 
@@ -144,6 +228,42 @@ export default function WorklogEditor({ pageId, onEditorReady }: Props) {
                       props: { datasetId: "" },
                     }),
                 },
+                {
+                  title: "画像",
+                  group: "メディア",
+                  icon: <ImagePlus size={18} />,
+                  aliases: ["image", "photo", "picture", "画像", "写真"],
+                  onItemClick: () =>
+                    insertBlock({
+                      type: "image",
+                      props: { imageId: "" },
+                    }),
+                },
+                // ── ページリンク（ツリー内の全ページを候補に） ──
+                ...(() => {
+                  const tree = loadTree();
+                  const pages: { id: string; title: string }[] = [];
+                  const collect = (nodeId: string) => {
+                    const node = tree[nodeId];
+                    if (!node) return;
+                    if (nodeId !== ROOT_ID && nodeId !== pageId) {
+                      pages.push({ id: nodeId, title: node.title || "無題のページ" });
+                    }
+                    node.children.forEach(collect);
+                  };
+                  collect(ROOT_ID);
+                  return pages.map((p) => ({
+                    title: p.title,
+                    group: "ページリンク",
+                    icon: <FileText size={18} />,
+                    aliases: ["page", "link", "ページ", "リンク", p.title],
+                    onItemClick: () =>
+                      insertBlock({
+                        type: "pageLink",
+                        props: { pageId: p.id },
+                      }),
+                  }));
+                })(),
               ],
               query
             )

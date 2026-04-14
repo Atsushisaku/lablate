@@ -8,9 +8,10 @@ interface TabBarProps {
   activeTabId: string;
   onSelectTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
+  canCloseTab?: (tabId: string) => boolean;
 }
 
-export default function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: TabBarProps) {
+export default function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab, canCloseTab }: TabBarProps) {
   if (tabs.length === 0) return null;
 
   return (
@@ -30,8 +31,7 @@ export default function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab }: T
           >
             {isDoc ? <FileText size={12} /> : <Table2 size={12} />}
             <span className="max-w-[120px] truncate">{tab.label}</span>
-            {/* ドキュメントタブは閉じない */}
-            {!isDoc && (
+            {(!canCloseTab || canCloseTab(tab.id)) && (
               <span
                 role="button"
                 onClick={(e) => { e.stopPropagation(); onCloseTab(tab.id); }}

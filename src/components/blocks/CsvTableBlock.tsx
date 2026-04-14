@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { createReactBlockSpec } from "@blocknote/react";
-import { loadDataset, saveDataset, Dataset, registerDataset } from "@/lib/storage";
+import { loadDataset, saveDataset, Dataset, registerDataset, getDatasetMeta, renameDataset } from "@/lib/storage";
 import { Upload, BarChart2, ChevronDown, ChevronRight, Plus, ExternalLink } from "lucide-react";
 
 import jspreadsheet from "jspreadsheet-ce";
@@ -137,7 +137,29 @@ function TableView({
     return false;
   });
 
-  const [tableConfig, setTableConfig] = useState<TableConfig>(() => loadTableConfig(block.id));
+  const [tableConfig, setTableConfig] = useState<TableConfig>(() => {
+    const cfg = loadTableConfig(block.id);
+    // 既存の tableConfig.title を DatasetMeta に移行
+    if (cfg.title && datasetId) {
+      const meta = getDatasetMeta(datasetId);
+      if (meta && (meta.name.startsWith("データセット") || !meta.name)) {
+        renameDataset(datasetId, cfg.title);
+      }
+    }
+    return cfg;
+  });
+
+  // ── データセット名（DatasetMeta.name を正とする） ──
+  const [datasetTitle, setDatasetTitle] = useState(() => getDatasetMeta(datasetId)?.name ?? "");
+
+  const handleTitleChange = useCallback((newTitle: string) => {
+    setDatasetTitle(newTitle);
+    renameDataset(datasetId, newTitle);
+    // タブ名にも反映するためカスタムイベントを発火
+    window.dispatchEvent(new CustomEvent("lablate-dataset-rename", {
+      detail: { datasetId, name: newTitle },
+    }));
+  }, [datasetId]);
 
   const [initData, setInitData] = useState<Dataset>(() => {
     const d = loadDataset(datasetId);
@@ -547,8 +569,8 @@ function TableView({
           <div className="px-3 py-1.5 border-b border-gray-100 bg-white">
             <input
               ref={titleRef}
-              value={tableConfig.title}
-              onChange={(e) => updateTableConfig({ title: e.target.value })}
+              value={datasetTitle}
+              onChange={(e) => handleTitleChange(e.target.value)}
               placeholder="テーブルタイトル"
               className="w-full text-sm font-medium outline-none bg-transparent placeholder:text-gray-300 text-gray-800"
               onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Escape") titleRef.current?.blur(); }}
@@ -572,7 +594,7 @@ function TableView({
           {collapsed ? (
             /* 折りたたみ時: タイトル + 行列数 */
             <span className="text-xs text-gray-500 truncate">
-              {tableConfig.title && <><span className="font-medium">{tableConfig.title}</span><span className="mx-1 text-gray-300">·</span></>}
+              {datasetTitle && <><span className="font-medium">{datasetTitle}</span><span className="mx-1 text-gray-300">·</span></>}
               {initData.headers.length} 列 × {initData.rows.length} 行
             </span>
           ) : (

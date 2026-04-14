@@ -138,6 +138,8 @@ export default function WorklogPage() {
       saveTabState(next);
       return next;
     });
+    // PageLinkBlock のタイトル更新通知
+    window.dispatchEvent(new Event("lablate-tree-change"));
   }, []);
 
   // ── ページ削除 ──
@@ -222,8 +224,41 @@ export default function WorklogPage() {
     return () => window.removeEventListener("lablate-open-spreadsheet-tab", handler);
   }, [selectedId]);
 
+  // ── データセット名変更のタブ名同期 ──
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { datasetId, name } = (e as CustomEvent).detail ?? {};
+      if (!datasetId || !name) return;
+      setTabState((prev) => {
+        const tabs = prev.tabs.map((t) =>
+          t.type === "spreadsheet" && t.datasetId === datasetId
+            ? { ...t, label: name }
+            : t
+        );
+        const next = { ...prev, tabs };
+        saveTabState(next);
+        return next;
+      });
+    };
+    window.addEventListener("lablate-dataset-rename", handler);
+    return () => window.removeEventListener("lablate-dataset-rename", handler);
+  }, []);
+
+  // ── ページリンクからのナビゲーション ──
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const targetPageId = (e as CustomEvent).detail?.pageId;
+      if (targetPageId && tree[targetPageId]) {
+        handleSelectPage(targetPageId);
+      }
+    };
+    window.addEventListener("lablate-navigate-page", handler);
+    return () => window.removeEventListener("lablate-navigate-page", handler);
+  }, [tree, handleSelectPage]);
+
   // ── 「md に挿入」ハンドラ ──
-  const handleInsertChartToDocument = useCallback((datasetId: string) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handleInsertChartToDocument = useCallback((datasetId: string, chartConfig?: any) => {
     // ドキュメントタブに切り替え
     const docTabId = `doc-${selectedId}`;
     setTabState((prev) => {
@@ -239,6 +274,21 @@ export default function WorklogPage() {
       try {
         const last = ed.document[ed.document.length - 1];
         if (last) ed.insertBlocks([{ type: "chart", props: { datasetId } }], last, "after");
+        // 挿入されたブロックの設定を保存
+        if (chartConfig) {
+          setTimeout(() => {
+            const doc = ed.document;
+            for (let i = doc.length - 1; i >= 0; i--) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const b = doc[i] as any;
+              if (b.type === "chart" && b.props?.datasetId === datasetId) {
+                const configToSave = { ...chartConfig, collapsed: false, chartWidth: 0, chartHeight: 340 };
+                localStorage.setItem(`lablate_chart_config_${b.id}`, JSON.stringify(configToSave));
+                break;
+              }
+            }
+          }, 100);
+        }
       } catch { /* editor may not be ready */ }
     }, 200);
   }, [selectedId]);
@@ -254,7 +304,7 @@ export default function WorklogPage() {
   // unmount → 次ティックで mount とすることで回避する。
   const activeDocPageId = activeTab?.type === "document" ? activeTab.pageId : null;
   const [editorPageId, setEditorPageId] = useState<string | null>(null);
-  const editorDefer = useRef<ReturnType<typeof setTimeout>>();
+  const editorDefer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   useEffect(() => {
     clearTimeout(editorDefer.current);
@@ -306,6 +356,12 @@ export default function WorklogPage() {
           activeTabId={tabState.activeTabId}
           onSelectTab={handleSelectTab}
           onCloseTab={handleCloseTab}
+          canCloseTab={(tabId) => {
+            const tab = tabState.tabs.find((t) => t.id === tabId);
+            if (tab?.type !== "document") return true;
+            // ドキュメントタブが1つだけの場合は閉じない
+            return tabState.tabs.filter((t) => t.type === "document").length > 1;
+          }}
         />
 
         {/* タブコンテンツ */}
