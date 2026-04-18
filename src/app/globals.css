@@ -2,9 +2,9 @@
 @tailwind components;
 @tailwind utilities;
 
-/* BlockNote の内部パディングを除去してコンテナ側で制御する */
+/* BlockNote の内部パディング: 左はサイドメニュー用スペースを確保、右はコンテナ側で制御 */
 .bn-editor {
-  padding-left: 0 !important;
+  padding-left: 48px !important;
   padding-right: 0 !important;
 }
 
@@ -15,25 +15,30 @@
   color: #1a1a1a !important;
 }
 
-/* 見出しスタイル */
+/* ドラッグ＆ドロップ インジケータ */
+.ring-t-indicator::before,
+.ring-b-indicator::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #3b82f6;
+  pointer-events: none;
+}
+.ring-t-indicator::before {
+  top: 0;
+}
+.ring-b-indicator::before {
+  bottom: 0;
+}
+.ring-inside-indicator {
+  background-color: rgba(59, 130, 246, 0.1);
+  box-shadow: inset 0 0 0 1.5px #3b82f6;
+  border-radius: 6px;
+}
+
+/* 見出し1をタイトルより小さく調整 */
 .bn-editor [data-content-type="heading"][data-level="1"] {
-  font-size: 1.75rem !important;
-  font-weight: 700 !important;
-  color: #1a1a1a !important;
-  margin-top: 1.5rem !important;
-  margin-bottom: 0.5rem !important;
-}
-.bn-editor [data-content-type="heading"][data-level="2"] {
-  font-size: 1.375rem !important;
-  font-weight: 700 !important;
-  color: #1a1a1a !important;
-  margin-top: 1.25rem !important;
-  margin-bottom: 0.25rem !important;
-}
-.bn-editor [data-content-type="heading"][data-level="3"] {
-  font-size: 1.125rem !important;
-  font-weight: 700 !important;
-  color: #1a1a1a !important;
-  margin-top: 1rem !important;
-  margin-bottom: 0.25rem !important;
+  font-size: 1.5rem !important;
 }

@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { createReactBlockSpec } from "@blocknote/react";
 import { loadDataset, saveDataset, Dataset, registerDataset, getDatasetMeta, renameDataset } from "@/lib/storage";
-import { Upload, BarChart2, ChevronDown, ChevronRight, Plus, ExternalLink } from "lucide-react";
+import { Import, BarChart2, ChevronDown, Plus, ExternalLink } from "lucide-react";
 
 import jspreadsheet from "jspreadsheet-ce";
 import "jspreadsheet-ce/dist/jspreadsheet.css";
@@ -570,10 +570,13 @@ function TableView({
           <button
             onMouseDown={(e) => e.preventDefault()}
             onClick={toggleCollapsed}
-            className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-600 shrink-0"
+            title={collapsed ? "展開" : "最小化"}
+            className="shrink-0 p-1 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-200 transition-colors"
           >
-            {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-            {collapsed ? "展開" : "最小化"}
+            <ChevronDown
+              size={14}
+              className={`transition-transform duration-150 ${collapsed ? "-rotate-90" : ""}`}
+            />
           </button>
 
           {collapsed ? (
@@ -584,49 +587,16 @@ function TableView({
             </span>
           ) : (
             <>
-              {/* CSV 読み込み */}
-              <button
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => fileRef.current?.click()}
-                className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-600"
-              >
-                <Upload size={12} /> CSV読み込む
-              </button>
-              {/* グラフ追加 */}
-              <button
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={insertChart}
-                className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-600"
-              >
-                <BarChart2 size={12} /> グラフ
-              </button>
-              {/* タブで開く */}
-              <button
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
-                  registerDataset(datasetId);
-                  window.dispatchEvent(new CustomEvent("lablate-open-spreadsheet-tab", { detail: { datasetId } }));
-                }}
-                className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-600"
-              >
-                <ExternalLink size={12} /> タブで開く
-              </button>
-              {/* タイトル表示トグル */}
-              <button
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
-                  updateTableConfig({ showTitle: !tableConfig.showTitle });
-                  if (!tableConfig.showTitle) setTimeout(() => titleRef.current?.focus(), 50);
-                }}
-                className={`text-xs px-2 py-1 rounded border font-medium transition-colors ${
-                  tableConfig.showTitle
-                    ? "border-blue-300 bg-blue-50 text-blue-600"
-                    : "border-gray-300 bg-white text-gray-400 hover:bg-gray-50"
-                }`}
-                title="タイトルを表示/非表示"
-              >
-                タイトル
-              </button>
+              {/* タイトル入力（常時表示） */}
+              <input
+                ref={titleRef}
+                value={datasetTitle}
+                onChange={(e) => handleTitleChange(e.target.value)}
+                placeholder="タイトル"
+                className="text-xs px-2 py-1 border border-gray-200 rounded outline-none bg-white min-w-0 w-40 text-gray-800 font-medium placeholder:font-normal placeholder:text-gray-400"
+                onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Escape") titleRef.current?.blur(); }}
+                onMouseDown={(e) => e.stopPropagation()}
+              />
               {/* 行追加 */}
               <button
                 onMouseDown={(e) => e.preventDefault()}
@@ -645,25 +615,38 @@ function TableView({
               >
                 <Plus size={12} /> 列
               </button>
+              {/* グラフ追加 */}
+              <button
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={insertChart}
+                className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-600"
+              >
+                <BarChart2 size={12} /> グラフ
+              </button>
+              {/* CSV 読み込み */}
+              <button
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => fileRef.current?.click()}
+                className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-600"
+              >
+                <Import size={12} /> インポート
+              </button>
+              {/* タブで開く（アイコンのみ） */}
+              <button
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  registerDataset(datasetId);
+                  window.dispatchEvent(new CustomEvent("lablate-open-spreadsheet-tab", { detail: { datasetId } }));
+                }}
+                className="flex items-center justify-center text-xs px-1.5 py-1 rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-500"
+                title="タブで開く"
+              >
+                <ExternalLink size={12} />
+              </button>
             </>
           )}
           <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={handleCsvImport} className="hidden" />
         </div>
-
-      {/* ── タイトル入力（showTitle=true かつ展開時のみ） ── */}
-        {tableConfig.showTitle && !collapsed && (
-          <div className="px-3 py-1.5 border-b border-gray-100 bg-white">
-            <input
-              ref={titleRef}
-              value={datasetTitle}
-              onChange={(e) => handleTitleChange(e.target.value)}
-              placeholder="テーブルタイトル"
-              className="w-full text-sm font-medium outline-none bg-transparent placeholder:text-gray-300 text-gray-800"
-              onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Escape") titleRef.current?.blur(); }}
-              onMouseDown={(e) => e.stopPropagation()}
-            />
-          </div>
-        )}
 
       {/* ── スプレッドシート本体 ── */}
       {!collapsed && (

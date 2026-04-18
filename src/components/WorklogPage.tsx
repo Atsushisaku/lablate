@@ -1,51 +1,88 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import { useState, useCallback, useEffect, useRef } from "react";
-import { PanelLeft, Loader2 } from "lucide-react";
-import { useSyncContext } from "@/lib/storage/sync-context";
 import Sidebar from "./Sidebar";
-import TabBar from "./TabBar";
+import PaneView from "./PaneView";
+import { TabDragPayload } from "./TabBar";
 import {
   loadTree,
   saveTree,
-  deletePageRecursive,
+  moveNode,
+  findParent,
+  cloneSubtree,
+  uniqueSiblingTitle,
   ROOT_ID,
   PageTree,
   createDefaultTree,
   Tab,
+  Pane,
   TabState,
   loadTabState,
   saveTabState,
   migrateDatasetRegistry,
+  cleanupOrphanedDatasets,
   getDatasetMeta,
+  trashPage,
+  restorePage,
+  permanentlyDeleteTrashItem,
+  emptyTrash,
+  loadTrash,
+  TrashItem,
+  isDescendant,
+  DatasetTrashItem,
+  loadDatasetTrash,
+  restoreDatasetFromTrash,
+  permanentlyDeleteTrashedDataset,
+  emptyDatasetTrash,
+  loadDoc,
+  saveDoc,
 } from "@/lib/storage";
-
-const WorklogEditor = dynamic(() => import("./WorklogEditor"), { ssr: false });
-const SpreadsheetTab = dynamic(() => import("./SpreadsheetTab"), { ssr: false });
+import { useSyncContext } from "@/lib/storage/sync-context";
+import { ChartConfig } from "./blocks/ChartRenderer";
 
 function getFirstPage(tree: PageTree): string {
   return tree[ROOT_ID]?.children[0] ?? ROOT_ID;
 }
 
-/** ページ用ドキュメントタブを生成 */
 function makeDocTab(pageId: string, title: string): Tab {
-  return { id: `doc-${pageId}`, type: "document", label: title || "無題のページ", pageId };
+  return { id: `doc-${pageId}`, type: "document", label: title || "新規ページ", pageId };
 }
+
+/** 全ペインから指定タブを探す */
+function locateTab(panes: Pane[], tabId: string): { pane: Pane; tab: Tab } | null {
+  for (const pane of panes) {
+    const tab = pane.tabs.find((t) => t.id === tabId);
+    if (tab) return { pane, tab };
+  }
+  return null;
+}
+
+function countDocTabs(panes: Pane[]): number {
+  return panes.reduce((sum, p) => sum + p.tabs.filter((t) => t.type === "document").length, 0);
+}
+
+const PANE_SPLIT_KEY = "lablate_pane_split";
 
 export default function WorklogPage() {
   const [mounted, setMounted] = useState(false);
   const [tree, setTree] = useState<PageTree>(createDefaultTree);
   const [selectedId, setSelectedId] = useState<string>("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [tabState, setTabState] = useState<TabState>({ tabs: [], activeTabId: "" });
-  const { isConnected, status: syncStatus, notifyChange } = useSyncContext();
+  const [tabState, setTabState] = useState<TabState>({ panes: [], activePaneId: "" });
+  const { notifyChange } = useSyncContext();
+  const [trash, setTrash] = useState<TrashItem[]>([]);
+  const [datasetTrash, setDatasetTrash] = useState<DatasetTrashItem[]>([]);
+  const [paneSplit, setPaneSplit] = useState(50); // 左ペインの割合
+  const [clipboard, setClipboard] = useState<{ mode: "copy" | "cut"; nodeId: string } | null>(null);
 
-  // BlockNote エディタへの参照（「md に挿入」用）
+  // pageId -> BlockNote editor
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const editorRef = useRef<any>(null);
+  const editorRefs = useRef<Map<string, any>>(new Map());
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const handleEditorReady = useCallback((pageId: string, ed: any) => {
+    editorRefs.current.set(pageId, ed);
+  }, []);
 
-  // ── タブ状態の永続化 ──
   const persistTabs = useCallback((state: TabState) => {
     setTabState(state);
     saveTabState(state);
@@ -58,26 +95,40 @@ export default function WorklogPage() {
     const firstPage = getFirstPage(t);
     setSelectedId(firstPage);
 
-    // データセットレジストリのマイグレーション
     migrateDatasetRegistry();
+    cleanupOrphanedDatasets();
+    setTrash(loadTrash());
+    setDatasetTrash(loadDatasetTrash());
 
-    // タブ状態の復元 or 初期作成
+    const savedSplit = parseInt(localStorage.getItem(PANE_SPLIT_KEY) ?? "");
+    if (Number.isFinite(savedSplit) && savedSplit >= 20 && savedSplit <= 80) {
+      setPaneSplit(savedSplit);
+    }
+
     const saved = loadTabState();
-    if (saved && saved.tabs.length > 0) {
-      // 保存済みタブがあればそれを使い、選択ページのドキュメントタブをアクティブに
+    const firstDocTab = makeDocTab(firstPage, t[firstPage]?.title ?? "無題のページ");
+    if (saved && saved.panes.length > 0) {
       const docTabId = `doc-${firstPage}`;
-      const hasDocTab = saved.tabs.some((t) => t.id === docTabId);
+      const hasDocTab = saved.panes.some((p) => p.tabs.some((tab) => tab.id === docTabId));
       if (!hasDocTab) {
-        const pageTitle = t[firstPage]?.title ?? "無題のページ";
-        saved.tabs.unshift(makeDocTab(firstPage, pageTitle));
+        // 先頭ペインに先頭ページのドキュメントタブを追加
+        const head = saved.panes[0];
+        saved.panes[0] = { ...head, tabs: [firstDocTab, ...head.tabs], activeTabId: docTabId };
+        saved.activePaneId = head.id;
+      } else {
+        // 既にあるペインをアクティブに
+        const owner = saved.panes.find((p) => p.tabs.some((tab) => tab.id === docTabId));
+        if (owner) {
+          saved.panes = saved.panes.map((p) => p.id === owner.id ? { ...p, activeTabId: docTabId } : p);
+          saved.activePaneId = owner.id;
+        }
       }
-      saved.activeTabId = docTabId;
       persistTabs(saved);
     } else {
-      const pageTitle = t[firstPage]?.title ?? "無題のページ";
+      const paneId = crypto.randomUUID();
       persistTabs({
-        tabs: [makeDocTab(firstPage, pageTitle)],
-        activeTabId: `doc-${firstPage}`,
+        panes: [{ id: paneId, tabs: [firstDocTab], activeTabId: firstDocTab.id }],
+        activePaneId: paneId,
       });
     }
 
@@ -96,28 +147,43 @@ export default function WorklogPage() {
     setSelectedId(pageId);
     setTabState((prev) => {
       const docTabId = `doc-${pageId}`;
-      let tabs = [...prev.tabs];
-      if (!tabs.some((t) => t.id === docTabId)) {
-        // まだ無ければドキュメントタブを追加
-        // 挿入位置: 最後のドキュメントタブの直後
-        const lastDocIdx = tabs.reduce((acc, t, i) => (t.type === "document" ? i : acc), -1);
-        const pageTitle = tree[pageId]?.title ?? "無題のページ";
-        tabs.splice(lastDocIdx + 1, 0, makeDocTab(pageId, pageTitle));
+      // 既に開かれているペインがあればフォーカス
+      const owner = prev.panes.find((p) => p.tabs.some((t) => t.id === docTabId));
+      if (owner) {
+        const next: TabState = {
+          panes: prev.panes.map((p) => p.id === owner.id ? { ...p, activeTabId: docTabId } : p),
+          activePaneId: owner.id,
+        };
+        saveTabState(next);
+        return next;
       }
-      const next = { tabs, activeTabId: docTabId };
+      // アクティブペイン（なければ先頭）に追加
+      const target = prev.panes.find((p) => p.id === prev.activePaneId) ?? prev.panes[0];
+      if (!target) return prev;
+      const pageTitle = tree[pageId]?.title ?? "無題のページ";
+      const newTab = makeDocTab(pageId, pageTitle);
+      const lastDocIdx = target.tabs.reduce((acc, t, i) => (t.type === "document" ? i : acc), -1);
+      const newTabs = [...target.tabs];
+      newTabs.splice(lastDocIdx + 1, 0, newTab);
+      const next: TabState = {
+        panes: prev.panes.map((p) => p.id === target.id
+          ? { ...p, tabs: newTabs, activeTabId: docTabId }
+          : p),
+        activePaneId: target.id,
+      };
       saveTabState(next);
       return next;
     });
   }, [tree]);
 
-  // ── ページ追加 ──
   const handleAddChild = useCallback((parentId: string) => {
     const newId = crypto.randomUUID();
     setTree((prev) => {
+      const title = uniqueSiblingTitle(prev, parentId, "新規ページ");
       const next = {
         ...prev,
         [parentId]: { ...prev[parentId], children: [...prev[parentId].children, newId] },
-        [newId]: { id: newId, title: "無題のページ", children: [] },
+        [newId]: { id: newId, title, children: [] },
       };
       saveTree(next);
       return next;
@@ -125,73 +191,377 @@ export default function WorklogPage() {
     handleSelectPage(newId);
   }, [handleSelectPage]);
 
-  // ── ページ名変更 ──
-  const handleRename = useCallback((id: string, title: string) => {
+  const handleAddFolder = useCallback((parentId: string) => {
+    const newId = crypto.randomUUID();
     setTree((prev) => {
-      const next = { ...prev, [id]: { ...prev[id], title } };
+      const title = uniqueSiblingTitle(prev, parentId, "新しいフォルダ");
+      const next = {
+        ...prev,
+        [parentId]: { ...prev[parentId], children: [...prev[parentId].children, newId] },
+        [newId]: { id: newId, title, children: [], type: "folder" as const },
+      };
       saveTree(next);
       return next;
     });
-    // タブのラベルも同期
+  }, []);
+
+  const handleRename = useCallback((id: string, title: string) => {
+    let appliedTitle = title;
+    setTree((prev) => {
+      const parentId = findParent(prev, id) ?? ROOT_ID;
+      appliedTitle = uniqueSiblingTitle(prev, parentId, title, id);
+      const next = { ...prev, [id]: { ...prev[id], title: appliedTitle } };
+      saveTree(next);
+      return next;
+    });
+    // タブラベルを全ペインで同期（衝突解消後のタイトルを使用）
     setTabState((prev) => {
-      const tabs = prev.tabs.map((t) =>
-        t.id === `doc-${id}` ? { ...t, label: title || "無題のページ" } : t
-      );
-      const next = { ...prev, tabs };
+      const panes = prev.panes.map((p) => ({
+        ...p,
+        tabs: p.tabs.map((t) => t.id === `doc-${id}` ? { ...t, label: appliedTitle || "新規ページ" } : t),
+      }));
+      const next: TabState = { ...prev, panes };
       saveTabState(next);
       return next;
     });
-    // PageLinkBlock のタイトル更新通知
     window.dispatchEvent(new Event("lablate-tree-change"));
   }, []);
 
-  // ── ページ削除 ──
   const handleDelete = useCallback((id: string) => {
     setTree((prev) => {
-      const next = deletePageRecursive({ ...prev }, id);
+      const next = trashPage(prev, id);
       saveTree(next);
       setSelectedId((cur) => {
         if (cur === id || !next[cur]) return getFirstPage(next);
         return cur;
       });
+      setTrash(loadTrash());
       return next;
     });
-    // 削除ページのドキュメントタブを閉じる
+    // 全ペインから該当ドキュメントタブを除去（空になったペインは削除）
     setTabState((prev) => {
-      const tabs = prev.tabs.filter((t) => !(t.type === "document" && t.pageId === id));
-      const activeTabId = prev.activeTabId === `doc-${id}`
-        ? (tabs[0]?.id ?? "")
-        : prev.activeTabId;
-      const next = { tabs, activeTabId };
+      const nextPanes: Pane[] = [];
+      for (const p of prev.panes) {
+        const newTabs = p.tabs.filter((t) => !(t.type === "document" && t.pageId === id));
+        if (newTabs.length === 0) continue;
+        let newActive = p.activeTabId;
+        if (newActive === `doc-${id}`) newActive = newTabs[0].id;
+        nextPanes.push({ ...p, tabs: newTabs, activeTabId: newActive });
+      }
+      // 全ペインが消える場合は空状態を避けるため、最低1ペイン確保（空でも残す）
+      if (nextPanes.length === 0 && prev.panes.length > 0) {
+        nextPanes.push({ id: prev.panes[0].id, tabs: [], activeTabId: "" });
+      }
+      const activePaneId = nextPanes.find((p) => p.id === prev.activePaneId)?.id ?? nextPanes[0]?.id ?? "";
+      const next: TabState = { panes: nextPanes, activePaneId };
       saveTabState(next);
       return next;
     });
   }, []);
 
-  // ── タブ操作 ──
-  const handleSelectTab = useCallback((tabId: string) => {
-    const tab = tabState.tabs.find((t) => t.id === tabId);
-    if (tab?.type === "document") setSelectedId(tab.pageId);
-    const next = { ...tabState, activeTabId: tabId };
-    saveTabState(next);
-    setTabState(next);
-  }, [tabState]);
+  const handleRestore = useCallback((trashItemId: string) => {
+    const next = restorePage(trashItemId);
+    setTree(next);
+    setTrash(loadTrash());
+    notifyChange("lablate_tree");
+    window.dispatchEvent(new Event("lablate-tree-change"));
+  }, [notifyChange]);
 
-  const handleCloseTab = useCallback((tabId: string) => {
-    const idx = tabState.tabs.findIndex((t) => t.id === tabId);
-    const tabs = tabState.tabs.filter((t) => t.id !== tabId);
-    let activeTabId = tabState.activeTabId;
-    if (activeTabId === tabId) {
-      // 閉じたタブがアクティブなら隣のタブへ
-      activeTabId = tabs[Math.min(idx, tabs.length - 1)]?.id ?? "";
+  const handlePermanentDelete = useCallback((trashItemId: string) => {
+    permanentlyDeleteTrashItem(trashItemId);
+    setTrash(loadTrash());
+  }, []);
+
+  const handleEmptyTrash = useCallback(() => {
+    emptyTrash();
+    setTrash([]);
+  }, []);
+
+  // ── データセットゴミ箱: 復元 / 完全削除 / 空にする ──
+  const handleRestoreDataset = useCallback((trashEntryId: string) => {
+    const item = restoreDatasetFromTrash(trashEntryId);
+    if (!item) return;
+    setDatasetTrash(loadDatasetTrash());
+
+    // 再挿入先ページの決定
+    const currentTree = loadTree();
+    const targetPageId = (item.meta.pageId && currentTree[item.meta.pageId])
+      ? item.meta.pageId
+      : selectedId;
+    if (!targetPageId || !currentTree[targetPageId]) return;
+
+    // アクティブエディタがあればそこに挿入、なければ localStorage doc を直接書き換え
+    const activeEditor = editorRefs.current.get(targetPageId);
+    if (activeEditor?.document?.length) {
+      try {
+        const last = activeEditor.document[activeEditor.document.length - 1];
+        if (last) activeEditor.insertBlocks([{ type: "csvTable", props: { datasetId: item.datasetId } }], last, "after");
+      } catch { /* ignore */ }
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const doc = (loadDoc(targetPageId) ?? []) as any[];
+      doc.push({ type: "csvTable", props: { datasetId: item.datasetId } });
+      saveDoc(targetPageId, doc);
+      notifyChange(`lablate_doc_${targetPageId}`);
     }
-    const next = { tabs, activeTabId };
-    saveTabState(next);
-    setTabState(next);
-    // 新しいアクティブがドキュメントタブならページ選択も更新
-    const newActive = tabs.find((t) => t.id === activeTabId);
-    if (newActive?.type === "document") setSelectedId(newActive.pageId);
-  }, [tabState]);
+
+    // 復元先ページをアクティブ化
+    handleSelectPage(targetPageId);
+  }, [selectedId, notifyChange]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handlePermanentDeleteDataset = useCallback((trashEntryId: string) => {
+    permanentlyDeleteTrashedDataset(trashEntryId);
+    setDatasetTrash(loadDatasetTrash());
+  }, []);
+
+  const handleEmptyDatasetTrash = useCallback(() => {
+    emptyDatasetTrash();
+    setDatasetTrash([]);
+  }, []);
+
+  const handleMove = useCallback((dragId: string, targetId: string, position: "before" | "after" | "inside") => {
+    setTree((prev) => {
+      const dragNode = prev[dragId];
+      if (!dragNode) return prev;
+      const newParentId = position === "inside"
+        ? targetId
+        : (findParent(prev, targetId) ?? ROOT_ID);
+      const uniqueTitle = uniqueSiblingTitle(prev, newParentId, dragNode.title, dragId);
+      let renamed: PageTree = prev;
+      if (uniqueTitle !== dragNode.title) {
+        renamed = { ...prev, [dragId]: { ...dragNode, title: uniqueTitle } };
+      }
+      const next = moveNode(renamed, dragId, targetId, position);
+      if (next === prev) return prev;
+      saveTree(next);
+      notifyChange("lablate_tree");
+      return next;
+    });
+  }, [notifyChange]);
+
+  // ── 複製: 対象ノードの兄弟（直後）として複製を挿入 ──
+  const duplicateIntoSibling = useCallback((tree: PageTree, sourceId: string): { tree: PageTree; newId: string } | null => {
+    const node = tree[sourceId];
+    if (!node || sourceId === ROOT_ID) return null;
+    const parentId = findParent(tree, sourceId) ?? ROOT_ID;
+    const parent = tree[parentId];
+    if (!parent) return null;
+    const { nodes, newRootId } = cloneSubtree(tree, sourceId);
+    // 兄弟と衝突しないように新タイトルを調整
+    const uniqueTitle = uniqueSiblingTitle(tree, parentId, nodes[newRootId].title);
+    nodes[newRootId] = { ...nodes[newRootId], title: uniqueTitle };
+    const idx = parent.children.indexOf(sourceId);
+    const newChildren = [...parent.children];
+    newChildren.splice(idx + 1, 0, newRootId);
+    const nextTree: PageTree = {
+      ...tree,
+      ...nodes,
+      [parentId]: { ...parent, children: newChildren },
+    };
+    return { tree: nextTree, newId: newRootId };
+  }, []);
+
+  const handleDuplicate = useCallback((sourceId: string) => {
+    setTree((prev) => {
+      const result = duplicateIntoSibling(prev, sourceId);
+      if (!result) return prev;
+      saveTree(result.tree);
+      notifyChange("lablate_tree");
+      window.dispatchEvent(new Event("lablate-tree-change"));
+      return result.tree;
+    });
+  }, [duplicateIntoSibling, notifyChange]);
+
+  const handleCopy = useCallback((nodeId: string) => {
+    if (!nodeId || nodeId === ROOT_ID) return;
+    setClipboard({ mode: "copy", nodeId });
+  }, []);
+
+  const handleCut = useCallback((nodeId: string) => {
+    if (!nodeId || nodeId === ROOT_ID) return;
+    setClipboard({ mode: "cut", nodeId });
+  }, []);
+
+  const handlePaste = useCallback((targetId: string) => {
+    if (!clipboard) return;
+    setTree((prev) => {
+      const source = prev[clipboard.nodeId];
+      if (!source) {
+        setClipboard(null);
+        return prev;
+      }
+      const target = prev[targetId];
+      if (!target) return prev;
+
+      const targetIsFolder = target.type === "folder";
+
+      if (clipboard.mode === "copy") {
+        // コピーは自分自身が対象でも OK（直後の兄弟として複製）
+        const { nodes, newRootId } = cloneSubtree(prev, clipboard.nodeId);
+        const parentForUniq = targetIsFolder ? targetId : (findParent(prev, targetId) ?? ROOT_ID);
+        const uniqueTitle = uniqueSiblingTitle(prev, parentForUniq, nodes[newRootId].title);
+        nodes[newRootId] = { ...nodes[newRootId], title: uniqueTitle };
+
+        let nextTree: PageTree = { ...prev, ...nodes };
+        if (targetIsFolder) {
+          nextTree[targetId] = { ...target, children: [...target.children, newRootId] };
+        } else {
+          const parent = nextTree[parentForUniq];
+          if (!parent) return prev;
+          const idx = parent.children.indexOf(targetId);
+          const newChildren = [...parent.children];
+          newChildren.splice(idx + 1, 0, newRootId);
+          nextTree = { ...nextTree, [parentForUniq]: { ...parent, children: newChildren } };
+        }
+        saveTree(nextTree);
+        notifyChange("lablate_tree");
+        window.dispatchEvent(new Event("lablate-tree-change"));
+        return nextTree;
+      }
+
+      // cut (移動) — 自分自身・子孫への移動は禁止
+      if (clipboard.nodeId === targetId) return prev;
+      if (isDescendant(prev, clipboard.nodeId, targetId)) return prev;
+
+      const position: "inside" | "after" = targetIsFolder ? "inside" : "after";
+      const newParentId = targetIsFolder ? targetId : (findParent(prev, targetId) ?? ROOT_ID);
+      const uniqueTitle = uniqueSiblingTitle(prev, newParentId, source.title, clipboard.nodeId);
+      let renamed: PageTree = prev;
+      if (uniqueTitle !== source.title) {
+        renamed = { ...prev, [clipboard.nodeId]: { ...source, title: uniqueTitle } };
+      }
+      const nextTree = moveNode(renamed, clipboard.nodeId, targetId, position);
+      if (nextTree === prev) return prev;
+      saveTree(nextTree);
+      notifyChange("lablate_tree");
+      setClipboard(null);
+      return nextTree;
+    });
+  }, [clipboard, notifyChange]);
+
+  // ── タブ操作 ──
+  const handleSelectTab = useCallback((paneId: string, tabId: string) => {
+    setTabState((prev) => {
+      const pane = prev.panes.find((p) => p.id === paneId);
+      if (!pane) return prev;
+      const tab = pane.tabs.find((t) => t.id === tabId);
+      if (!tab) return prev;
+      if (tab.type === "document") setSelectedId(tab.pageId);
+      const next: TabState = {
+        panes: prev.panes.map((p) => p.id === paneId ? { ...p, activeTabId: tabId } : p),
+        activePaneId: paneId,
+      };
+      saveTabState(next);
+      return next;
+    });
+  }, []);
+
+  const handleCloseTab = useCallback((paneId: string, tabId: string) => {
+    setTabState((prev) => {
+      const pane = prev.panes.find((p) => p.id === paneId);
+      if (!pane) return prev;
+      const idx = pane.tabs.findIndex((t) => t.id === tabId);
+      const newTabs = pane.tabs.filter((t) => t.id !== tabId);
+      let newActive = pane.activeTabId;
+      if (pane.activeTabId === tabId) {
+        newActive = newTabs[Math.min(idx, newTabs.length - 1)]?.id ?? "";
+      }
+      let panes: Pane[];
+      let activePaneId = prev.activePaneId;
+      if (newTabs.length === 0 && prev.panes.length > 1) {
+        // 空ペインを削除
+        panes = prev.panes.filter((p) => p.id !== paneId);
+        if (activePaneId === paneId) activePaneId = panes[0].id;
+      } else {
+        panes = prev.panes.map((p) => p.id === paneId ? { ...p, tabs: newTabs, activeTabId: newActive } : p);
+      }
+      const next: TabState = { panes, activePaneId };
+      saveTabState(next);
+      // selectedId を新アクティブに追従
+      const curPane = panes.find((p) => p.id === activePaneId);
+      const curTab = curPane?.tabs.find((t) => t.id === curPane.activeTabId);
+      if (curTab?.type === "document") setSelectedId(curTab.pageId);
+      return next;
+    });
+  }, []);
+
+  // ── 分割（アクティブタブを新規右側ペインへ移動） ──
+  const handleSplit = useCallback(() => {
+    setTabState((prev) => {
+      if (prev.panes.length >= 2) return prev;
+      const pane = prev.panes.find((p) => p.id === prev.activePaneId) ?? prev.panes[0];
+      if (!pane || pane.tabs.length < 2) return prev;
+      const moveId = pane.activeTabId;
+      const moveTab = pane.tabs.find((t) => t.id === moveId);
+      if (!moveTab) return prev;
+      const newSourceTabs = pane.tabs.filter((t) => t.id !== moveId);
+      const newSourceActive = newSourceTabs[0]?.id ?? "";
+      const newPane: Pane = { id: crypto.randomUUID(), tabs: [moveTab], activeTabId: moveTab.id };
+      const next: TabState = {
+        panes: [
+          ...prev.panes.map((p) => p.id === pane.id ? { ...p, tabs: newSourceTabs, activeTabId: newSourceActive } : p),
+          newPane,
+        ],
+        activePaneId: newPane.id,
+      };
+      saveTabState(next);
+      if (moveTab.type === "document") setSelectedId(moveTab.pageId);
+      return next;
+    });
+  }, []);
+
+  // ── タブ移動（D&D） ──
+  const handleMoveTab = useCallback((from: TabDragPayload, toPaneId: string, beforeTabId: string | null) => {
+    setTabState((prev) => {
+      const fromPane = prev.panes.find((p) => p.id === from.paneId);
+      const toPane = prev.panes.find((p) => p.id === toPaneId);
+      if (!fromPane || !toPane) return prev;
+      const tab = fromPane.tabs.find((t) => t.id === from.tabId);
+      if (!tab) return prev;
+      if (from.paneId === toPaneId && from.tabId === beforeTabId) return prev;
+
+      // 同一ペイン内での並び替えと、ペイン間移動で処理を分岐
+      if (from.paneId === toPaneId) {
+        // 並び替え: 一度除去して挿入位置を決める
+        const without = fromPane.tabs.filter((t) => t.id !== from.tabId);
+        const insertIdx = beforeTabId === null
+          ? without.length
+          : Math.max(0, without.findIndex((t) => t.id === beforeTabId));
+        const newTabs = [...without.slice(0, insertIdx), tab, ...without.slice(insertIdx)];
+        const next: TabState = {
+          panes: prev.panes.map((p) => p.id === toPaneId ? { ...p, tabs: newTabs, activeTabId: tab.id } : p),
+          activePaneId: toPaneId,
+        };
+        saveTabState(next);
+        if (tab.type === "document") setSelectedId(tab.pageId);
+        return next;
+      }
+
+      // 他ペインへ移動
+      const newSourceTabs = fromPane.tabs.filter((t) => t.id !== from.tabId);
+      const newSourceActive = fromPane.activeTabId === from.tabId
+        ? (newSourceTabs[0]?.id ?? "")
+        : fromPane.activeTabId;
+      const insertIdx = beforeTabId === null
+        ? toPane.tabs.length
+        : Math.max(0, toPane.tabs.findIndex((t) => t.id === beforeTabId));
+      const newTargetTabs = [...toPane.tabs.slice(0, insertIdx), tab, ...toPane.tabs.slice(insertIdx)];
+
+      const sourceBecomesEmpty = newSourceTabs.length === 0;
+      const panes: Pane[] = prev.panes
+        .map((p) => {
+          if (p.id === from.paneId) return { ...p, tabs: newSourceTabs, activeTabId: newSourceActive };
+          if (p.id === toPaneId) return { ...p, tabs: newTargetTabs, activeTabId: tab.id };
+          return p;
+        })
+        .filter((p) => !(sourceBecomesEmpty && p.id === from.paneId && prev.panes.length > 1));
+
+      const next: TabState = { panes, activePaneId: toPaneId };
+      saveTabState(next);
+      if (tab.type === "document") setSelectedId(tab.pageId);
+      return next;
+    });
+  }, []);
 
   // ── スプレッドシートタブを開く（CsvTableBlock からの CustomEvent） ──
   useEffect(() => {
@@ -201,14 +571,15 @@ export default function WorklogPage() {
       if (!datasetId) return;
 
       setTabState((prev) => {
-        // 既存タブがあればフォーカス
-        const existing = prev.tabs.find((t) => t.type === "spreadsheet" && t.datasetId === datasetId);
+        const existing = locateTab(prev.panes, `sheet-${datasetId}`);
         if (existing) {
-          const next = { ...prev, activeTabId: existing.id };
+          const next: TabState = {
+            panes: prev.panes.map((p) => p.id === existing.pane.id ? { ...p, activeTabId: existing.tab.id } : p),
+            activePaneId: existing.pane.id,
+          };
           saveTabState(next);
           return next;
         }
-        // なければ新規作成
         const meta = getDatasetMeta(datasetId);
         const newTab: Tab = {
           id: `sheet-${datasetId}`,
@@ -217,8 +588,14 @@ export default function WorklogPage() {
           pageId: selectedId,
           datasetId,
         };
-        const tabs = [...prev.tabs, newTab];
-        const next = { tabs, activeTabId: newTab.id };
+        const target = prev.panes.find((p) => p.id === prev.activePaneId) ?? prev.panes[0];
+        if (!target) return prev;
+        const next: TabState = {
+          panes: prev.panes.map((p) => p.id === target.id
+            ? { ...p, tabs: [...p.tabs, newTab], activeTabId: newTab.id }
+            : p),
+          activePaneId: target.id,
+        };
         saveTabState(next);
         return next;
       });
@@ -227,18 +604,19 @@ export default function WorklogPage() {
     return () => window.removeEventListener("lablate-open-spreadsheet-tab", handler);
   }, [selectedId]);
 
-  // ── データセット名変更のタブ名同期 ──
+  // ── データセット名変更をタブ名へ伝搬 ──
   useEffect(() => {
     const handler = (e: Event) => {
       const { datasetId, name } = (e as CustomEvent).detail ?? {};
       if (!datasetId || !name) return;
       setTabState((prev) => {
-        const tabs = prev.tabs.map((t) =>
-          t.type === "spreadsheet" && t.datasetId === datasetId
-            ? { ...t, label: name }
-            : t
-        );
-        const next = { ...prev, tabs };
+        const panes = prev.panes.map((p) => ({
+          ...p,
+          tabs: p.tabs.map((t) =>
+            t.type === "spreadsheet" && t.datasetId === datasetId ? { ...t, label: name } : t
+          ),
+        }));
+        const next: TabState = { ...prev, panes };
         saveTabState(next);
         return next;
       });
@@ -259,25 +637,54 @@ export default function WorklogPage() {
     return () => window.removeEventListener("lablate-navigate-page", handler);
   }, [tree, handleSelectPage]);
 
-  // ── 「md に挿入」ハンドラ ──
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const handleInsertChartToDocument = useCallback((datasetId: string, chartConfig?: any) => {
-    // ドキュメントタブに切り替え
+  // ── データセットがゴミ箱へ送られた → 該当タブを閉じる & ゴミ箱state 更新 ──
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const datasetId = (e as CustomEvent).detail?.datasetId;
+      if (!datasetId) return;
+      setTabState((prev) => {
+        const panes = prev.panes
+          .map((p) => {
+            const remaining = p.tabs.filter((t) => !(t.type === "spreadsheet" && t.datasetId === datasetId));
+            let activeTabId = p.activeTabId;
+            if (!remaining.some((t) => t.id === activeTabId)) {
+              activeTabId = remaining[0]?.id ?? "";
+            }
+            return { ...p, tabs: remaining, activeTabId };
+          })
+          .filter((p, i, arr) => p.tabs.length > 0 || arr.length === 1);
+        const activePaneId = panes.find((p) => p.id === prev.activePaneId)?.id ?? panes[0]?.id ?? "";
+        const next: TabState = { panes, activePaneId };
+        saveTabState(next);
+        return next;
+      });
+      setDatasetTrash(loadDatasetTrash());
+    };
+    window.addEventListener("lablate-dataset-trashed", handler);
+    return () => window.removeEventListener("lablate-dataset-trashed", handler);
+  }, []);
+
+  // ── 「挿入」ハンドラ: selectedId のドキュメントタブへグラフ挿入 ──
+  const handleInsertChartToDocument = useCallback((datasetId: string, chartConfig?: ChartConfig) => {
     const docTabId = `doc-${selectedId}`;
+    // 該当ドキュメントタブのあるペインに切り替え
     setTabState((prev) => {
-      const next = { ...prev, activeTabId: docTabId };
+      const owner = prev.panes.find((p) => p.tabs.some((t) => t.id === docTabId));
+      if (!owner) return prev;
+      const next: TabState = {
+        panes: prev.panes.map((p) => p.id === owner.id ? { ...p, activeTabId: docTabId } : p),
+        activePaneId: owner.id,
+      };
       saveTabState(next);
       return next;
     });
 
-    // エディタにグラフブロックを挿入（タブ切替後にエディタが準備完了するまで待つ）
     setTimeout(() => {
-      const ed = editorRef.current;
+      const ed = editorRefs.current.get(selectedId);
       if (!ed?.document?.length) return;
       try {
         const last = ed.document[ed.document.length - 1];
         if (last) ed.insertBlocks([{ type: "chart", props: { datasetId } }], last, "after");
-        // 挿入されたブロックの設定を保存
         if (chartConfig) {
           setTimeout(() => {
             const doc = ed.document;
@@ -296,122 +703,119 @@ export default function WorklogPage() {
     }, 200);
   }, [selectedId]);
 
-  // ── アクティブタブ ──
-  const activeTab = tabState.tabs.find((t) => t.id === tabState.activeTabId);
-  const selectedPage = tree[selectedId];
-
-  // ── エディタの安全な再マウント ──
-  // BlockNote (TipTap ReactNodeView) は初期化時に flushSync を使うため、
-  // 旧エディタの破棄と新エディタのマウントを同一レンダーで行うと
-  // "Position undefined out of range" エラーが発生する。
-  // unmount → 次ティックで mount とすることで回避する。
-  const activeDocPageId = activeTab?.type === "document" ? activeTab.pageId : null;
-  const [editorPageId, setEditorPageId] = useState<string | null>(null);
-  const editorDefer = useRef<ReturnType<typeof setTimeout>>(undefined);
-
+  // ── ペイン間分割バー ──
+  const splitDragRef = useRef<{ startX: number; startPercent: number } | null>(null);
   useEffect(() => {
-    clearTimeout(editorDefer.current);
-    if (activeDocPageId) {
-      setEditorPageId(null);                        // 旧エディタを即 unmount
-      editorDefer.current = setTimeout(() => {
-        setEditorPageId(activeDocPageId);            // 新エディタを次ティックで mount
-      }, 0);
-    } else {
-      setEditorPageId(null);
-    }
-    return () => clearTimeout(editorDefer.current);
-  }, [activeDocPageId]);
+    const onMove = (e: MouseEvent) => {
+      const d = splitDragRef.current;
+      if (!d) return;
+      // メインエリア幅を取得
+      const container = document.getElementById("lablate-pane-area");
+      const w = container?.getBoundingClientRect().width ?? window.innerWidth;
+      if (w <= 0) return;
+      const pct = Math.max(20, Math.min(80, d.startPercent + ((e.clientX - d.startX) / w) * 100));
+      setPaneSplit(Math.round(pct));
+    };
+    const onUp = () => {
+      if (!splitDragRef.current) return;
+      splitDragRef.current = null;
+      localStorage.setItem(PANE_SPLIT_KEY, String(paneSplit));
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+  }, [paneSplit]);
+
+  const startPaneSplitDrag = (e: React.MouseEvent) => {
+    e.preventDefault();
+    splitDragRef.current = { startX: e.clientX, startPercent: paneSplit };
+  };
+
+  // ── 1ペイン目のドキュメントタブが2枚以上あれば分割可能 ──
+  const canSplit = tabState.panes.length === 1 && (tabState.panes[0]?.tabs.length ?? 0) >= 2;
+  const totalDocTabs = countDocTabs(tabState.panes);
+  const canCloseTab = useCallback((tabId: string) => {
+    const located = locateTab(tabState.panes, tabId);
+    if (!located) return true;
+    if (located.tab.type !== "document") return true;
+    return totalDocTabs > 1;
+  }, [tabState.panes, totalDocTabs]);
 
   if (!mounted) return null;
 
   return (
     <div className="flex h-screen overflow-hidden bg-white">
-      {/* サイドバー */}
       {sidebarOpen && (
-        <div className="w-56 shrink-0 h-full">
+        <div className="w-60 shrink-0 h-full">
           <Sidebar
             tree={tree}
             selectedId={selectedId}
             onSelect={handleSelectPage}
             onAddChild={handleAddChild}
+            onAddFolder={handleAddFolder}
             onRename={handleRename}
             onDelete={handleDelete}
+            onMove={handleMove}
+            onDuplicate={handleDuplicate}
+            onCopy={handleCopy}
+            onCut={handleCut}
+            onPaste={handlePaste}
+            hasClipboard={!!clipboard}
+            cutId={clipboard?.mode === "cut" ? clipboard.nodeId : null}
+            trash={trash}
+            onRestore={handleRestore}
+            onPermanentDelete={handlePermanentDelete}
+            onEmptyTrash={handleEmptyTrash}
+            datasetTrash={datasetTrash}
+            onRestoreDataset={handleRestoreDataset}
+            onPermanentDeleteDataset={handlePermanentDeleteDataset}
+            onEmptyDatasetTrash={handleEmptyDatasetTrash}
           />
         </div>
       )}
 
-      {/* メインエリア */}
-      <div className="flex flex-1 flex-col overflow-hidden">
-        {/* ヘッダー */}
-        <header className="flex items-center gap-2 border-b border-gray-200 bg-white/90 backdrop-blur-sm px-3 py-2 shrink-0">
-          <button
-            onClick={() => setSidebarOpen((v) => !v)}
-            className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100"
-            title="サイドバーを開閉"
-          >
-            <PanelLeft size={18} />
-          </button>
-          <div className="flex-1" />
-          {/* 同期ステータス */}
-          <div className="flex items-center gap-1.5 text-xs text-gray-400" title={
-            isConnected
-              ? syncStatus === "saving" ? "保存中..." : syncStatus === "loading" ? "読み込み中..." : "フォルダ同期中"
-              : "ローカルのみ"
-          }>
-            {isConnected ? (
-              syncStatus === "saving" || syncStatus === "loading" ? (
-                <Loader2 size={13} className="animate-spin text-blue-500" />
-              ) : (
-                <span className="inline-block w-2 h-2 rounded-full bg-green-400" />
-              )
-            ) : (
-              <span className="inline-block w-2 h-2 rounded-full bg-yellow-400" />
-            )}
-            <span>{isConnected ? "同期中" : "ローカル"}</span>
-          </div>
-        </header>
-
-        {/* タブバー */}
-        <TabBar
-          tabs={tabState.tabs}
-          activeTabId={tabState.activeTabId}
-          onSelectTab={handleSelectTab}
-          onCloseTab={handleCloseTab}
-          canCloseTab={(tabId) => {
-            const tab = tabState.tabs.find((t) => t.id === tabId);
-            if (tab?.type !== "document") return true;
-            // ドキュメントタブが1つだけの場合は閉じない
-            return tabState.tabs.filter((t) => t.type === "document").length > 1;
-          }}
-        />
-
-        {/* タブコンテンツ */}
-        {editorPageId && selectedPage && (
-          <main className="flex-1 overflow-y-auto">
-            <div className="mx-auto max-w-3xl px-4 py-8">
-              <input
-                key={editorPageId}
-                defaultValue={selectedPage.title === "無題のページ" ? "" : selectedPage.title}
-                placeholder="無題のページ"
-                onChange={(e) => handleRename(editorPageId, e.target.value || "無題のページ")}
-                className="w-full font-bold placeholder-gray-300 outline-none mb-4 bg-transparent"
-                style={{ fontSize: "2.5rem", color: "#1a1a1a", fontWeight: 700 }}
+      <div id="lablate-pane-area" className="flex flex-1 flex-row overflow-hidden">
+        {tabState.panes.map((pane, i) => {
+          const isLast = i === tabState.panes.length - 1;
+          const isSplit = tabState.panes.length === 2;
+          const style: React.CSSProperties = isSplit
+            ? (i === 0
+                ? { flexBasis: `${paneSplit}%`, flexGrow: 0, flexShrink: 0 }
+                : { flex: 1, minWidth: 0 })
+            : { flex: 1, minWidth: 0 };
+          return (
+            <div key={pane.id} className="flex h-full" style={{ ...style, overflow: "hidden" }}>
+              <PaneView
+                pane={pane}
+                isActive={pane.id === tabState.activePaneId}
+                onActivate={() => setTabState((prev) => ({ ...prev, activePaneId: pane.id }))}
+                showSidebarToggle={i === 0}
+                onToggleSidebar={() => setSidebarOpen((v) => !v)}
+                showSplitButton={i === 0 && canSplit}
+                onSplit={handleSplit}
+                canCloseTab={canCloseTab}
+                onSelectTab={(tid) => handleSelectTab(pane.id, tid)}
+                onCloseTab={(tid) => handleCloseTab(pane.id, tid)}
+                onMoveTab={handleMoveTab}
+                tree={tree}
+                onRename={handleRename}
+                onEditorReady={handleEditorReady}
+                onInsertChartToDocument={handleInsertChartToDocument}
+                style={{ flex: 1, minWidth: 0 }}
               />
-              <WorklogEditor
-                key={`editor-${editorPageId}`}
-                pageId={editorPageId}
-                onEditorReady={(ed: any) => { editorRef.current = ed; }} // eslint-disable-line @typescript-eslint/no-explicit-any
-              />
+              {!isLast && (
+                <div
+                  onMouseDown={startPaneSplitDrag}
+                  className="w-1 shrink-0 bg-gray-200 hover:bg-blue-400 cursor-col-resize transition-colors"
+                  title="ドラッグで幅を調整"
+                />
+              )}
             </div>
-          </main>
-        )}
-
-        {activeTab?.type === "spreadsheet" && activeTab.datasetId && (
-          <SpreadsheetTab
-            datasetId={activeTab.datasetId}
-            onInsertChartToDocument={handleInsertChartToDocument}
-          />
-        )}
+          );
+        })}
       </div>
     </div>
   );

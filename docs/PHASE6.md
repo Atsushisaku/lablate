@@ -2,315 +2,254 @@
 
 ## 目標
 
-サブスクリプション課金を導入し、クラウドへのプロジェクト保存とプロジェクト共有（交代編集）を実現する。
-Phase 5 の認証基盤の上に構築する。
+Stripe によるサブスクリプション課金を導入する。
+**クラウド保存・プロジェクト共有機能は Lablate 側で実装せず、OneDrive 共有フォルダの活用を公式推奨とする**。
+Phase 5 の Cognito 認証基盤の上に構築する。
 
 ---
 
-## 背景・方針
+## 背景・方針の転換（重要）
 
-### ビジネスモデル
+### なぜクラウド保存・共有を Lablate で作らないのか
+
+当初は Supabase DB にプロジェクトを保存し、アプリ内共有機能を実装する想定だった。
+しかし以下の理由から方針転換する：
+
+1. **データ主権の思想と矛盾する**
+   Phase 4 で「Lablate はデータを一切預からない」と明言している。クラウド保存を足すと説明が揺らぐ。
+
+2. **情シス承認の難易度が跳ね上がる**
+   データを預かる = 個人情報保護法 + 各機関のデータ管理規程の対象になる。ISMAP 登録・SOC 2 等の追加対応が必要になる可能性。
+
+3. **開発工数が膨大**
+   共有機能（ロール管理、招待メール、RLS、競合解決）は自前で作ると数ヶ月かかる。
+
+4. **OneDrive 共有フォルダで十分**
+   対象ユーザー（研究機関勤務者）は全員 OneDrive / SharePoint を持っている。共有機能はそこに丸投げできる。
+
+### 新しい共有モデル
+
+```
+ユーザーが OneDrive で共有フォルダを作成
+  ↓
+共有フォルダ内に Lablate プロジェクトフォルダを配置
+  ↓
+メンバーがそのフォルダを Lablate で開く
+  ↓
+OneDrive が自動同期、Lablate は交代編集（順番に編集）を想定
+```
+
+**共有機能はユーザー組織が既に運用している OneDrive / SharePoint に委譲する。**
+Lablate 側は「競合検出 UI」だけを提供する（Phase 4 で既に仕込んでいる）。
+
+### Phase 6 で本当にやること
+
+- Stripe による Pro プランの課金（Lablate を継続運営する収益源）
+- Pro 機能の実装（何を Pro 限定にするかは下記）
+
+---
+
+## ビジネスモデル
 
 ```
 Free プラン（無料）
-  ├─ ローカル保存のみ
+  ├─ 全エディタ機能
+  ├─ ローカル保存（Phase 4）
+  ├─ OneDrive 同期フォルダ保存
   ├─ エクスポート / インポート
-  └─ 全エディタ機能
+  └─ グラフ画像エクスポート（標準解像度）
 
 Pro プラン（個人向け有料）
   ├─ Free の全機能
-  ├─ クラウド保存（プロジェクト数無制限）
-  ├─ デバイス間同期
-  └─ グラフ画像の高解像度エクスポート
-
-Team プラン（チーム向け有料）
-  ├─ Pro の全機能
-  ├─ プロジェクト共有（最大 N メンバー）
-  ├─ アクセス制御（閲覧 / 編集 / 管理者）
-  └─ 編集履歴・変更ログ
+  ├─ グラフ画像の高解像度エクスポート（4x 以上、学会発表向け）
+  ├─ LLM 連携機能（Phase 7 での先行提供）
+  ├─ 優先サポート
+  └─ 将来: テンプレート集、統計関数拡張など
 ```
 
 **※ 料金設定は別途決定。ここでは機能仕様のみ定義する。**
 
-### データ保存の選択制
+### Team プランはいったん作らない
 
-ユーザーが保存先を選べる設計を維持する：
-
-```
-プロジェクト作成時:
-  ├─ 「ローカルに保存」→ Phase 4 のフォルダ保存（無料）
-  └─ 「クラウドに保存」→ Supabase DB に保存（Pro 以上）
-```
+共有機能を Lablate で持たない方針なので、Team プランは定義しない。
+将来的に組織ライセンス（まとめて N ライセンス契約）を提供する可能性はあるが、Phase 6 では Free / Pro の 2 段階でシンプルに始める。
 
 ---
 
-## Part 1: サブスクリプション（Stripe）
+## Stripe 連携
 
-### Stripe 連携の仕組み
+### Stripe 側のセットアップ
+
+1. Stripe アカウント作成（本人確認必要）
+2. 商品・価格作成（Pro プラン月額）
+3. Webhook エンドポイント設定
+4. Tax（消費税）設定 - 日本向けなら 10%
+
+### 決済フロー
 
 ```
 ユーザーが「Pro にアップグレード」をクリック
   ↓
-Stripe Checkout セッションを作成（サーバー側）
+[Next.js API] Stripe Checkout セッション作成（サーバー側）
   ↓
 Stripe の決済画面にリダイレクト
   ↓
-決済完了 → Stripe Webhook が Supabase に通知
+決済完了
   ↓
-profiles.plan を 'pro' に更新
+Stripe Webhook → [Next.js API] → Cognito カスタム属性 `plan` を 'pro' に更新
   ↓
-クライアント側でプラン変更を検知 → 機能解放
+クライアント側でトークン再取得 → プラン変更を反映 → 機能解放
 ```
 
-### データベース追加
+### プラン情報の保持場所
 
-```sql
--- サブスクリプション管理
-create table public.subscriptions (
-  id uuid default gen_random_uuid() primary key,
-  user_id uuid references auth.users(id) on delete cascade not null,
-  stripe_customer_id text,
-  stripe_subscription_id text,
-  plan text default 'free',                    -- 'free' | 'pro' | 'team'
-  status text default 'active',                -- 'active' | 'canceled' | 'past_due'
-  current_period_start timestamptz,
-  current_period_end timestamptz,
-  created_at timestamptz default now(),
-  updated_at timestamptz default now()
-);
-```
+- Cognito のカスタム属性 `custom:plan` に保存（'free' | 'pro'）
+- DB を別途持たない（Cognito で完結させる）
+- Stripe Customer ID もカスタム属性 `custom:stripe_customer_id` に保存
+
+**これにより Lablate 側 DB は不要になる**。Cognito + Stripe の二層で完結。
 
 ### API Routes（Next.js）
+
+Next.js の API Routes を AWS Lambda + API Gateway 経由で動かす。
+または Lambda@Edge / CloudFront Functions でサーバーレスに処理。
 
 ```
 src/app/api/
   ├─ stripe/
   │   ├─ checkout/route.ts       ← Checkout セッション作成
-  │   ├─ portal/route.ts         ← カスタマーポータル（プラン変更・解約）
-  │   └─ webhook/route.ts        ← Stripe Webhook 受信
+  │   ├─ portal/route.ts         ← カスタマーポータル
+  │   └─ webhook/route.ts        ← Stripe Webhook 受信 → Cognito 更新
   └─ ...
 ```
 
-### UI
+**実装メモ**: Phase 5 で静的エクスポート（`output: "export"`）にしている場合、API Routes は別途 Lambda で動かす必要あり。以下のいずれかを選択：
 
-- **設定画面 / プロフィール画面**にプラン表示
+| 方式 | 難易度 | コスト |
+|------|--------|--------|
+| AWS Lambda + API Gateway（自前実装） | 中 | 無料枠内 |
+| AWS Amplify Hosting（SSR モード） | 低 | 無料枠あり |
+| Vercel に戻す（API 部分のみ） | 低 | 無料枠あり |
+
+**推奨: Amplify Hosting または Lambda + API Gateway**（AWS 完結を優先）。
+
+---
+
+## Pro プランの機能
+
+### 1. グラフ画像の高解像度エクスポート
+
+```
+Free: Plotly.toImage() で 2x 解像度（Phase 4 実装済み）
+Pro:  Plotly.toImage() で 4x 解像度 + SVG エクスポート追加
+```
+
+実装は `plan` 属性を見て分岐するだけ。機能制限の実装コストが低い。
+
+### 2. LLM 連携（Phase 7 相当の機能を Pro で先行提供）
+
+- Markdown をもとにした要約・報告書生成
+- データから考察のドラフト生成
+- OpenAI API or Anthropic API を Lablate のバックエンドから呼ぶ（ユーザーが自分の API キーを登録する方式でも可）
+
+**Phase 6 時点では基盤のみ用意。実機能は Phase 7 で実装する前提でも可。**
+
+### 3. プラン制限の実装
+
+```typescript
+// 機能ゲート
+const { user } = useAuth();
+const isPro = user?.plan === "pro";
+
+<Button
+  onClick={() => exportHighRes()}
+  disabled={!isPro}
+  title={isPro ? "" : "Pro プランで利用できます"}
+>
+  高解像度エクスポート
+</Button>
+```
+
+### 4. アップグレード誘導 UI
+
+- Pro 限定機能をクリックしたとき、ロック解除のモーダル表示
 - 「Pro にアップグレード」ボタン → Stripe Checkout へ
-- 「プランを管理」ボタン → Stripe Customer Portal へ（解約・カード変更）
-- プラン制限に達した場合のアップグレード誘導 UI
+- 押しつけがましくならない程度に配置
 
 ---
 
-## Part 2: クラウド保存
+## 共有機能の代替（OneDrive 共有フォルダの使い方ガイド）
 
-### データベース設計
+**Lablate 側で共有機能は実装しない**が、ユーザーに使い方を案内する。
 
-```sql
--- プロジェクト
-create table public.projects (
-  id uuid default gen_random_uuid() primary key,
-  owner_id uuid references auth.users(id) on delete cascade not null,
-  name text not null default 'Untitled',
-  tree jsonb not null default '{}',                -- PageTree
-  dataset_registry jsonb not null default '[]',    -- DatasetMeta[]
-  tabs jsonb,                                       -- TabState
-  created_at timestamptz default now(),
-  updated_at timestamptz default now()
-);
+### ヘルプドキュメント / サイト内ガイド
 
--- ページ（ドキュメント）
-create table public.pages (
-  id uuid primary key,                             -- pageId
-  project_id uuid references public.projects(id) on delete cascade not null,
-  blocks jsonb not null default '[]',              -- PartialBlock[]
-  markdown text,                                    -- 生成された Markdown
-  updated_at timestamptz default now()
-);
+```markdown
+# プロジェクトを共有する
 
--- データセット（テーブルデータ）
-create table public.datasets (
-  id uuid primary key,                             -- datasetId
-  project_id uuid references public.projects(id) on delete cascade not null,
-  headers jsonb not null default '[]',
-  rows jsonb not null default '[]',
-  config jsonb,                                     -- テーブル設定
-  updated_at timestamptz default now()
-);
+Lablate はデータを預からない設計のため、共有は OneDrive / SharePoint の
+共有フォルダ機能を利用してください。
 
--- グラフ設定
-create table public.charts (
-  id text primary key,                             -- blockId
-  project_id uuid references public.projects(id) on delete cascade not null,
-  config jsonb not null default '{}',
-  updated_at timestamptz default now()
-);
+## 手順
 
--- 画像（メタデータのみ。Blob は Supabase Storage）
-create table public.images (
-  id uuid primary key,                             -- imageId
-  project_id uuid references public.projects(id) on delete cascade not null,
-  meta jsonb not null,
-  storage_path text not null,                      -- Supabase Storage 内のパス
-  updated_at timestamptz default now()
-);
+1. OneDrive で新しいフォルダを作成（例: `Lablate_共有_実験A`）
+2. そのフォルダを「共有」→ 共有したい相手のメールアドレスを指定
+3. Lablate を開き、「フォルダを選択」でその共有フォルダを指定
+4. 通常通り編集。変更内容は OneDrive が自動同期します
+
+## 注意事項
+
+- **同時編集はできません**。メンバーが順番に編集してください。
+- 誰かが編集中かは OneDrive の表示で確認できます。
+- 競合が発生した場合は Lablate が通知します。
 ```
 
-### 画像ストレージ
-
-- Supabase Storage を使用（S3 互換）
-- バケット: `project-images`
-- パス: `{project_id}/{image_id}.{ext}`
-- RLS でプロジェクトメンバーのみアクセス可能
-
-### クラウド保存の StorageProvider 実装
+### サンプルワークフロー
 
 ```
-src/lib/storage/
-  ├─ types.ts              ← 既存
-  ├─ local.ts              ← 既存（localStorage）
-  ├─ fs-provider.ts        ← 既存（File System Access API）
-  ├─ cloud-provider.ts     ← 【新規】Supabase 経由のクラウド保存
-  └─ ...
+週次ミーティングで担当を決める
+  → Aさんが月曜に実験ノート編集
+  → Bさんが火曜にグラフ追加
+  → Cさんが水曜に考察記入
 ```
 
-Phase 3 で定義した `StorageProvider` インターフェースの Supabase 実装を作成。
-プロジェクトの保存先設定に応じて `local` / `fs` / `cloud` を切り替える。
+この方式なら共同編集がなくても実用上は問題ないケースが多い。
 
-### 同期戦略（交代編集向け）
+### Lablate 側のサポート機能（軽量）
 
-リアルタイム同期ではなく、**楽観的ロック**方式を採用する：
+- フォルダ接続時に `.lablate-lock` ファイルを作成 → 他ユーザーに編集中を通知（シンプルな排他制御）
+- 開始時に最終編集者・最終編集日時を表示
 
-```
-ユーザー A がプロジェクトを開く
-  ↓
-クラウドから最新データをダウンロード → localStorage に展開
-  ↓
-編集（ローカルで操作、デバウンスでクラウドに保存）
-  ↓
-保存時に updated_at を比較
-  ├─ 自分が最後の編集者 → そのまま保存
-  └─ 他の人が編集済み → 競合通知
-      ├─ 「自分の変更で上書き」
-      ├─ 「サーバーの内容で更新」
-      └─ 「両方ダウンロードして手動マージ」
-```
-
-**リアルタイム同時編集は Phase 7 以降のスコープとする。**
+**※ これは軽量な実装で済む。RLS も DB も不要。**
 
 ---
 
-## Part 3: プロジェクト共有
+## プロジェクト一覧画面（縮小版）
 
-### 共有モデル
-
-```sql
--- プロジェクトメンバー
-create table public.project_members (
-  project_id uuid references public.projects(id) on delete cascade,
-  user_id uuid references auth.users(id) on delete cascade,
-  role text not null default 'viewer',       -- 'owner' | 'editor' | 'viewer'
-  invited_at timestamptz default now(),
-  primary key (project_id, user_id)
-);
-```
-
-### 権限
-
-| ロール | 閲覧 | 編集 | メンバー招待 | プロジェクト削除 |
-|--------|------|------|-------------|----------------|
-| viewer | 可   | 不可 | 不可         | 不可            |
-| editor | 可   | 可   | 不可         | 不可            |
-| owner  | 可   | 可   | 可           | 可              |
-
-### 共有フロー
-
-```
-オーナーが「共有」ボタンをクリック
-  ↓
-メールアドレスを入力 + ロール選択（閲覧 / 編集）
-  ↓
-招待メール送信（Supabase Edge Function 経由）
-  ↓
-招待されたユーザーがログイン
-  ↓
-プロジェクト一覧に共有プロジェクトが表示される
-```
-
-### RLS ポリシー
-
-```sql
--- projects: オーナーまたはメンバーのみアクセス
-alter table public.projects enable row level security;
-
-create policy "Owner and members can view projects"
-  on public.projects for select
-  using (
-    owner_id = auth.uid()
-    or exists (
-      select 1 from public.project_members
-      where project_id = projects.id and user_id = auth.uid()
-    )
-  );
-
-create policy "Owner and editors can update projects"
-  on public.projects for update
-  using (
-    owner_id = auth.uid()
-    or exists (
-      select 1 from public.project_members
-      where project_id = projects.id
-        and user_id = auth.uid()
-        and role in ('editor', 'owner')
-    )
-  );
-
--- 他テーブル（pages, datasets, charts, images）も同様のポリシーを適用
-```
-
----
-
-## UI 変更
-
-### プロジェクト一覧画面（新規）
-
-ログイン後の最初の画面。ダッシュボード的な役割。
+クラウド保存がないので、プロジェクト一覧はシンプルになる：
 
 ```
 ┌──────────────────────────────────────────┐
 │ Lablate                    [👤 ユーザー] │
 ├──────────────────────────────────────────┤
 │                                          │
-│ マイプロジェクト          [+ 新規作成]   │
+│ 最近開いたプロジェクト    [+ 新規作成]   │
 │                                          │
 │  📁 実験A（ローカル）     最終編集: 4/14 │
-│  ☁️ 実験B（クラウド）     最終編集: 4/13 │
-│  👥 共有プロジェクトC     最終編集: 4/12 │
+│  📁 実験B（OneDrive）     最終編集: 4/13 │
 │                                          │
-│ 共有されたプロジェクト                   │
-│                                          │
-│  👥 田中さんの実験D（閲覧のみ）         │
+│ [フォルダを選択して開く]                 │
 │                                          │
 └──────────────────────────────────────────┘
 ```
 
-### 共有ダイアログ
+- 「最近開いたプロジェクト」は **ブラウザ側でフォルダハンドルを永続化** して実現
+  （File System Access API + IndexedDB でハンドルを保存）
+- 「共有されたプロジェクト」の区別は不要（全て OneDrive 経由）
 
-```
-┌─ プロジェクトを共有 ──────────────────┐
-│                                        │
-│ メールアドレス: [____________] [招待]   │
-│ ロール: [編集者 ▼]                     │
-│                                        │
-│ メンバー:                              │
-│  👤 自分（オーナー）                   │
-│  👤 tanaka@univ.ac.jp（編集者）[×]     │
-│  👤 suzuki@univ.ac.jp（閲覧者）[×]     │
-│                                        │
-│ リンクで共有: [https://...] [コピー]   │
-│                                        │
-└────────────────────────────────────────┘
-```
+---
 
-### 設定 / プラン画面
+## 設定 / プラン画面
 
 ```
 ┌─ アカウント設定 ──────────────────────┐
@@ -319,10 +258,13 @@ create policy "Owner and editors can update projects"
 │ [Pro にアップグレード]                 │
 │                                        │
 │ プロフィール:                          │
-│  名前: [____________]                  │
+│  名前: 山田 太郎                       │
 │  メール: user@example.com              │
 │                                        │
-│ [ログアウト]                           │
+│ 請求 (Pro プラン):                     │
+│  [プランを管理] （Stripe Portal へ）   │
+│                                        │
+│ [ログアウト] [アカウント削除]          │
 └────────────────────────────────────────┘
 ```
 
@@ -336,76 +278,102 @@ STRIPE_SECRET_KEY=sk_test_...
 STRIPE_WEBHOOK_SECRET=whsec_...
 NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_...
 STRIPE_PRO_PRICE_ID=price_...
-STRIPE_TEAM_PRICE_ID=price_...
+
+# Cognito 管理用（Lambda 側）
+COGNITO_USER_POOL_ID=ap-northeast-1_xxxxxxxxx
+AWS_REGION=ap-northeast-1
 ```
 
 ---
 
 ## 実装の優先順位
 
-Phase 6 は範囲が広いため、以下の順で段階的に実装する：
-
 ```
-Step 1: クラウド保存（cloud-provider + DB テーブル + RLS）
-  → ログインユーザーが自分のプロジェクトをクラウドに保存できる
+Step 1: Amplify Hosting または Lambda + API Gateway セットアップ
+        → Phase 5 の静的配信を SSR / API 対応に拡張
 
-Step 2: プロジェクト一覧画面
-  → ローカル / クラウドのプロジェクトを統合表示
+Step 2: プラン属性を Cognito に追加、クライアント側でプラン判定
+        → 未課金でも 'free' として動くようにする
 
-Step 3: プロジェクト共有
-  → メンバー招待、ロール管理、RLS による制御
+Step 3: Stripe Checkout + Webhook 実装
+        → 決済 → Cognito 更新の流れを通す
 
-Step 4: Stripe 連携
-  → 課金、プラン管理、機能制限
+Step 4: Pro 機能の実装（高解像度エクスポート等）
+        → 機能ゲートをつける
+
+Step 5: プラン管理 UI + カスタマーポータル
+        → ユーザーが自分で解約できる状態にする
+
+Step 6: OneDrive 共有ワークフローのガイド整備
+        → サイト内ヘルプ + 動画チュートリアル
 ```
 
 ---
 
 ## 完了条件
 
-### サブスクリプション
+### インフラ追加
 
-- [ ] Stripe アカウントセットアップ
+- [ ] Amplify Hosting または Lambda + API Gateway のセットアップ
+- [ ] API Routes を AWS 上で動作可能にする
+- [ ] Stripe アカウント作成 + 商品登録
+
+### 課金
+
 - [ ] Checkout セッション API
-- [ ] Webhook 受信 → プラン更新
-- [ ] Customer Portal（プラン変更・解約）
+- [ ] Webhook 受信 → Cognito の `custom:plan` 更新
+- [ ] Customer Portal 連携（プラン変更・解約）
 - [ ] プラン表示 UI
-- [ ] 機能制限（Free ユーザーのクラウド保存ブロック等）
+- [ ] 支払い失敗時の処理（past_due ステータス）
 
-### クラウド保存
+### Pro 機能
 
-- [ ] DB テーブル作成（projects, pages, datasets, charts, images）
-- [ ] RLS ポリシー設定
-- [ ] cloud-provider.ts 実装
-- [ ] プロジェクト作成時に保存先選択（ローカル / クラウド）
-- [ ] デバウンス付き自動保存（クラウド）
-- [ ] クラウドからの読み込み
-- [ ] 画像の Supabase Storage 保存
-- [ ] 楽観的ロックによる競合検出
+- [ ] Cognito カスタム属性 `custom:plan`, `custom:stripe_customer_id` 追加
+- [ ] クライアント側でプラン判定フック実装
+- [ ] 高解像度グラフエクスポート（Pro 限定）
+- [ ] SVG エクスポート（Pro 限定）
+- [ ] アップグレード誘導モーダル
 
-### プロジェクト共有
+### 共有ワークフロー
 
-- [ ] project_members テーブル + RLS
-- [ ] メンバー招待（メール送信）
-- [ ] ロール管理 UI（owner / editor / viewer）
-- [ ] 共有プロジェクト一覧表示
-- [ ] 権限に応じた UI 制御（viewer は編集不可）
+- [ ] OneDrive 共有フォルダ活用ガイド（サイト内ヘルプ）
+- [ ] `.lablate-lock` による簡易排他制御
+- [ ] 最終編集者・編集日時表示
+- [ ] プロジェクト競合検出 UI（Phase 4 の機能を実運用投入）
 
 ### UI
 
-- [ ] プロジェクト一覧画面
-- [ ] 共有ダイアログ
+- [ ] プロジェクト一覧画面（最近開いたフォルダ）
 - [ ] 設定 / プラン画面
 - [ ] アップグレード誘導 UI
+
+### 運用
+
+- [ ] 特商法表記
+- [ ] 返金ポリシー
+- [ ] サポート窓口設置（メール or フォーム）
 
 ---
 
 ## スコープ外（Phase 7 以降）
 
-- リアルタイム同時編集（CRDT / Yjs）
-- LLM 統合（Markdown → PPT 自動生成、データ分析）
-- チーム管理画面（管理者ダッシュボード）
+- LLM 統合の本実装（Markdown → 報告書自動生成、データ考察生成）
+- リアルタイム同時編集（CRDT / Yjs）- 見通しは立っていない
+- Team / Enterprise プラン（組織ライセンス）
 - 監査ログ
-- SSO（SAML）対応
-- オンプレミス版 Supabase のデプロイガイド
+- ISMAP-LIU 申請
 - モバイルアプリ
+- Microsoft Graph API による OneDrive 直接連携（現時点で予定なし）
+
+---
+
+## 備考: Phase 6 の前に検討すべきこと
+
+Phase 6 は課金を入れるフェーズ。開始前に以下を確認：
+
+1. **Phase 5 の無料版で十分なユーザーがついたか**（最低 50-100 人の継続利用）
+2. **課金に値する Pro 機能が明確に見えているか**（ユーザーヒアリング）
+3. **個人事業主 or 法人として請求書発行が可能か**（税務・法務の準備）
+4. **継続的な運用コストの見通し**（サーバー・Stripe 手数料・サポート工数）
+
+**ユーザーがつかないうちに課金を入れても意味がない**。Phase 5 で手応えを確認してから Phase 6 に着手する判断を。

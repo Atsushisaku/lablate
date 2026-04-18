@@ -10,13 +10,14 @@ import {
 } from "@blocknote/react";
 import "@blocknote/core/fonts/inter.css";
 import "@blocknote/mantine/style.css";
-import { loadDoc, saveDoc, registerDataset, loadTree, ROOT_ID } from "@/lib/storage";
+import { loadDoc, saveDoc, registerDataset, loadTree, ROOT_ID, collectUsedDatasetIds, trashDataset } from "@/lib/storage";
 import { useSyncContext } from "@/lib/storage/sync-context";
 import { csvTableBlockSpec } from "./blocks/CsvTableBlock";
 import { chartBlockSpec } from "./blocks/ChartBlock";
+import { chartRefBlockSpec } from "./blocks/ChartRefBlock";
 import { imageBlockSpec } from "./blocks/ImageBlock";
 import { pageLinkBlockSpec } from "./blocks/PageLinkBlock";
-import { Table2, BarChart2, ImagePlus, FileText } from "lucide-react";
+import { Table2, BarChart2, ImagePlus, FileText, Link2 } from "lucide-react";
 
 // ── カスタムブロックを含むスキーマ ────────────────────────────────────
 
@@ -25,6 +26,7 @@ const schema = BlockNoteSchema.create({
     ...defaultBlockSpecs,
     csvTable: csvTableBlockSpec,
     chart: chartBlockSpec,
+    chartRef: chartRefBlockSpec,
     image: imageBlockSpec,
     pageLink: pageLinkBlockSpec,
   },
@@ -53,10 +55,45 @@ export default function WorklogEditor({ pageId, onEditorReady }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor]);
 
+  // ドキュメント内の datasetId セット。ブロック削除検出に使用
+  const prevDatasetIdsRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
+    // 初期 datasetId セットを記録
+    const initial = new Set<string>();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const b of editor.document as any[]) {
+      const dsId = b?.props?.datasetId;
+      if (dsId && typeof dsId === "string") initial.add(dsId);
+    }
+    prevDatasetIdsRef.current = initial;
+
     const unsubscribe = editor.onChange(() => {
       saveDoc(pageId, editor.document as PartialBlock[]);
       notifyChange(`lablate_doc_${pageId}`);
+
+      // datasetId が消えたブロックを検出 → 他所で使われていなければゴミ箱へ
+      const current = new Set<string>();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      for (const b of editor.document as any[]) {
+        const dsId = b?.props?.datasetId;
+        if (dsId && typeof dsId === "string") current.add(dsId);
+      }
+      const removed: string[] = [];
+      for (const id of prevDatasetIdsRef.current) {
+        if (!current.has(id)) removed.push(id);
+      }
+      if (removed.length > 0) {
+        // collectUsedDatasetIds はゴミ箱を含め全ツリーを走査する
+        const stillUsed = collectUsedDatasetIds();
+        for (const id of removed) {
+          if (!stillUsed.has(id)) {
+            trashDataset(id);
+            window.dispatchEvent(new CustomEvent("lablate-dataset-trashed", { detail: { datasetId: id } }));
+          }
+        }
+      }
+      prevDatasetIdsRef.current = current;
     });
     return () => unsubscribe?.();
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -66,7 +103,7 @@ export default function WorklogEditor({ pageId, onEditorReady }: Props) {
   // ProseMirror は段落先頭で Backspace すると前のノードと結合しようとするが、
   // content:"none" のカスタムブロックは結合できないため削除されてしまう。
   // これをキャプチャフェーズで検知し、代わりに空段落を削除するだけにする。
-  const CUSTOM_BLOCK_TYPES = new Set(["csvTable", "chart", "image", "pageLink"]);
+  const CUSTOM_BLOCK_TYPES = new Set(["csvTable", "chart", "chartRef", "image", "pageLink"]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -220,13 +257,13 @@ export default function WorklogEditor({ pageId, onEditorReady }: Props) {
   return (
     <div ref={editorWrapRef} onDrop={onEditorDrop} onDragOver={(e) => { if (e.dataTransfer.types.includes("Files")) e.preventDefault(); }}>
       {/* 挿入ツールバー */}
-      <div className="flex items-center gap-1 px-1 mb-1">
+      <div className="flex items-center gap-1 mb-1 pl-[48px]">
         <button
           onMouseDown={(e) => {
             e.preventDefault();
             insertBlock({
               type: "csvTable",
-              props: { datasetId: (() => { const id = crypto.randomUUID(); registerDataset(id); return id; })() },
+              props: { datasetId: (() => { const id = crypto.randomUUID(); registerDataset(id, undefined, pageId); return id; })() },
             });
           }}
           className="flex items-center gap-1 text-xs px-2 py-1 rounded text-gray-500 hover:bg-gray-100"
@@ -248,6 +285,20 @@ export default function WorklogEditor({ pageId, onEditorReady }: Props) {
         >
           <BarChart2 size={13} />
           グラフ
+        </button>
+        <button
+          onMouseDown={(e) => {
+            e.preventDefault();
+            insertBlock({
+              type: "chartRef",
+              props: { datasetId: "", sourcePageId: "" },
+            });
+          }}
+          className="flex items-center gap-1 text-xs px-2 py-1 rounded text-gray-500 hover:bg-gray-100"
+          title="グラフ参照を挿入（または / メニュー）"
+        >
+          <Link2 size={13} />
+          グラフ参照
         </button>
         <button
           onMouseDown={(e) => {
@@ -287,7 +338,7 @@ export default function WorklogEditor({ pageId, onEditorReady }: Props) {
                   onItemClick: () =>
                     insertBlock({
                       type: "csvTable",
-                      props: { datasetId: (() => { const id = crypto.randomUUID(); registerDataset(id); return id; })() },
+                      props: { datasetId: (() => { const id = crypto.randomUUID(); registerDataset(id, undefined, pageId); return id; })() },
                     }),
                 },
                 {
@@ -299,6 +350,17 @@ export default function WorklogEditor({ pageId, onEditorReady }: Props) {
                     insertBlock({
                       type: "chart",
                       props: { datasetId: "" },
+                    }),
+                },
+                {
+                  title: "グラフ参照",
+                  group: "データ",
+                  icon: <Link2 size={18} />,
+                  aliases: ["chart-ref", "グラフ参照", "参照", "reference"],
+                  onItemClick: () =>
+                    insertBlock({
+                      type: "chartRef",
+                      props: { datasetId: "", sourcePageId: "" },
                     }),
                 },
                 {
