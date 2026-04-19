@@ -12,6 +12,7 @@
     "@blocknote/core": "^0.25.0",
     "@blocknote/mantine": "^0.25.0",
     "@blocknote/react": "^0.25.0",
+    "amazon-cognito-identity-js": "^6.3.16",
     "jspreadsheet-ce": "^5.0.4",
     "jszip": "^3.10.1",
     "lucide-react": "^1.8.0",

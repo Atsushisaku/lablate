@@ -5,6 +5,7 @@ import { FilePlus, FolderPlus, FolderOpen, FolderSync, Unplug, Download, Upload,
 import { PageTree, ROOT_ID, findParent, TrashItem, DatasetTrashItem } from "@/lib/storage";
 import PageTreeItem from "./PageTreeItem";
 import ContextMenu, { ContextMenuItem } from "./ContextMenu";
+import SidebarAuth from "./SidebarAuth";
 import { useSyncContext } from "@/lib/storage/sync-context";
 
 interface Props {
@@ -260,8 +261,11 @@ export default function Sidebar({
 
   return (
     <aside className="flex h-full flex-col bg-gray-50 border-r border-gray-200">
+      {/* ── 認証エリア（最上段） ── */}
+      <SidebarAuth />
+
       {/* ── ヘッダー ── */}
-      <div className="flex items-center justify-between px-3 pt-3 pb-2">
+      <div className="flex items-center justify-between px-3 pt-2 pb-2 border-t border-gray-200">
         <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">
           ページ
         </span>
