@@ -143,25 +143,55 @@ localStorage への保存（既存の動作、変更なし）
 
 ### 再接続（ブラウザ再起動後）
 
+フォルダハンドルは IndexedDB に永続化。起動時にサイレント（ユーザー操作不要）で権限確認し、**権限が残っていればフォルダから自動ロード → UI マウント**する。権限が切れていれば「再接続」ボタンを表示する。
+
 ```
 Lablate を開く
   ↓
-localStorage にキャッシュがある → そのまま表示（即座に使える）
-  ↓
-「フォルダに再接続」ボタンをクリック（手動）
-  ↓
-権限の再取得（ブラウザが再度許可を求める）
-  ↓
-フォルダのファイルと localStorage を比較
-  ├─ フォルダの方が新しい → フォルダからロード（別 PC で編集された場合）
-  └─ localStorage の方が新しい → フォルダに書き出し
+IndexedDB に保存されたハンドルを取得
+  ├─ ハンドル無し → 非接続状態で起動（「保存先フォルダを選択」ボタン表示）
+  └─ ハンドル有り
+     ↓
+     queryPermission({ mode: "readwrite" }) をサイレントに呼ぶ
+     ├─ "granted"  → loadFromFolder() 実行 → UI マウント（フォルダ優先で常に最新を反映）
+     └─ "prompt"   → ローディング終了、サイドバー下部に「再接続: <フォルダ名>」ボタンを表示
+                    ↓
+                    ユーザーがボタンをクリック（ユーザージェスチャー）
+                    ↓
+                    requestPermission でブラウザが許可ダイアログを表示
+                    ↓
+                    許可された → loadFromFolder() → window.location.reload()
 ```
+
+**同期方針**: フォルダ側が正（Source of Truth）。同時編集は非サポート。localStorage はオフラインキャッシュ兼編集バッファとして使い、起動時は常にフォルダ側で上書きする。
 
 ### 非接続時の動作
 
 - File System Access API 非対応ブラウザ、またはフォルダ未選択時
 - 従来通り localStorage のみで動作（Phase 3 までと同じ）
 - エクスポート/インポート機能で手動のファイル入出力は可能（後述）
+
+### 複数端末間での共有（OneDrive 等のクラウド同期フォルダ利用）
+
+OS レベルの同期機能（OneDrive / iCloud Drive / Google Drive / Dropbox 等）を利用することで、同一フォルダを指定した複数端末間でプロジェクトを共有できる。Lablate 自体はクラウド API を使わず、ローカルフォルダへの読み書きのみ行う。
+
+**前提**
+- 各端末で OneDrive 等の同期クライアントが動作していること
+- OneDrive 配下に Lablate プロジェクト専用のルートフォルダを作成（他ファイルと混ざらないようにする）
+- **同時編集は非サポート**。1端末ずつ使い、別端末で開く前にクラウド側の同期完了を待つ
+
+**セットアップ**
+1. 端末A: サイドバー下部の「保存先フォルダを選択」→ OneDrive 配下の専用フォルダを指定 → フォルダに書き出し
+2. OneDrive が端末Bへ同期
+3. 端末B: 同じフォルダを「保存先フォルダを選択」→ `project.json` が存在するため端末A のデータが読み込まれる
+
+**2回目以降の起動**
+- 上記「再接続（ブラウザ再起動後）」フローに従い、**起動時に必ずフォルダから最新状態をロード**する（フォルダ優先の LWW）
+- 権限が残っていれば自動ロード。切れていれば「再接続」ボタン1クリックでロード
+
+**競合**
+- 端末A の未同期編集がある状態で端末B で編集した場合、OneDrive が `-conflict` 付きファイルを生成することがある。Lablate では検知・マージしない
+- 実質的に「1端末ずつ使う」運用前提
 
 ---
 
@@ -180,6 +210,58 @@ File System Access API が使えない環境向けに、手動のエクスポー
 - 「インポート」ボタンで ZIP ファイルを選択
 - project.json を読み取り、全データを localStorage + IndexedDB に展開
 - 既存データとの競合時はユーザーに確認（上書き / スキップ / キャンセル）
+
+---
+
+## Excel ファイル取り込み
+
+CSV と同じ経路で `.xlsx` / `.xls` を取り込み、内部は CSV 相当の `Dataset` (`{ headers: string[]; rows: string[][] }`) として保存する。
+
+### 入口
+
+1. **CsvTableBlock のインポートボタン**: `accept=".csv,.xlsx,.xls"`。既存テーブルに上書きロード
+2. **エディタ領域への D&D**: Excel / CSV をドロップすると新規 `csvTable` ブロックが挿入される
+
+### 変換ルール
+
+| Excel セル | Dataset 格納値 |
+|---|---|
+| 数値 (`t: "n"`) | `.v` をそのまま文字列化（例: `1234.56`。ロケール表記なし） |
+| パーセント | `.v` をそのまま（例: `0.123`。`×100` しない） |
+| 日付 (`t: "d"`) | `.w`（Excel の表示書式） |
+| 数式 | 計算済み値のみ（数式文字列は破棄） |
+| 結合セル | 範囲内すべてにトップ左セルの値をコピー |
+| 非表示行/列 | 取り込む |
+| 末尾の空行/空列 | トリム |
+| 画像 / グラフ / コメント | スキップ |
+
+ヘッダーは常に `A, B, C, ...` を自動採番（CSV と同じ挙動）。Excel の1行目もデータ行として扱う。
+
+### 複数シート
+
+- 非空シートが1つ: そのまま取り込み
+- 非空シートが複数: `SheetPickerModal` で選択
+
+### サイズ制限
+
+- 取り込み予定セル数 × 行数 > 100,000 セルで確認ダイアログ
+- localStorage 容量超過時は保存が失敗するため、ユーザーが承認した場合のみ続行
+
+### ライブラリ
+
+- **SheetJS Community Edition** (`xlsx` パッケージ、Apache-2.0)
+- **配布**: CDN 固定版 URL (`https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`) を `package.json` に指定
+- npm 版(`xlsx@0.18.5`) は ReDoS / Prototype Pollution が未修正のため不採用
+- 制約: ビルド時に `cdn.sheetjs.com` への外向きアクセスが必要。Dependabot/Renovate の自動更新は非対応。手動でバージョン固定 URL を更新する運用
+- ブラウザ側のみで動作（`dynamic import("xlsx")` により別チャンク化し、First Load JS から除外）
+
+### 関連ファイル
+
+- `src/lib/excel-import.ts` — SheetJS ラッパー。`parseExcelFile(file)` を提供
+- `src/lib/csv-parse.ts` — CSV パース共通化 (`parseCsvAllRows`)
+- `src/components/SheetPickerModal.tsx` — シート選択 UI
+- `src/components/blocks/CsvTableBlock.tsx` — 既存テーブルへの上書きインポート経路
+- `src/components/WorklogEditor.tsx` — 新規ブロック挿入経路 (D&D)
 
 ---
 
@@ -231,8 +313,8 @@ export class FSProvider {
   /** フォルダ選択ダイアログを開く */
   async connect(): Promise<boolean>;
 
-  /** 権限の再取得（ブラウザ再起動後） */
-  async reconnect(): Promise<boolean>;
+  /** 権限の再取得（ブラウザ再起動後）。silent=true ならユーザー操作不要で権限チェックのみ */
+  async reconnect(handle: FileSystemDirectoryHandle, silent?: boolean): Promise<boolean>;
 
   /** 接続状態 */
   isConnected(): boolean;

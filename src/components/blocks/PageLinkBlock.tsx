@@ -24,7 +24,7 @@ function PageLinkView({
         if (!raw) return;
         const tree = JSON.parse(raw);
         const node = tree[linkedPageId];
-        if (node) setPageTitle(node.title || "無題のページ");
+        if (node) setPageTitle(node.title || "新規ページ");
       } catch { /* ignore */ }
     };
     loadTitle();

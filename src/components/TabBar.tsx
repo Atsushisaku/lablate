@@ -105,7 +105,7 @@ export default function TabBar({
 
   return (
     <div
-      className="flex items-center border-b border-gray-200 bg-white shrink-0 overflow-x-auto"
+      className="flex items-center border-b border-gray-200 bg-white shrink-0"
       onDragOver={handleBarDragOver}
       onDrop={handleBarDrop}
       onDragLeave={handleBarDragLeave}
@@ -134,7 +134,8 @@ export default function TabBar({
               onDragLeave={() => setDragOverTabId((id) => (id === tab.id ? null : id))}
               onDrop={(e) => handleTabDrop(e, tab.id)}
               onClick={() => onSelectTab(tab.id)}
-              className={`relative flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer border-b-2 shrink-0 transition-colors select-none ${
+              style={{ flex: "0 1 150px", minWidth: "100px", maxWidth: "150px" }}
+              className={`relative flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer border-b-2 transition-colors select-none ${
                 isActive
                   ? "border-blue-500 text-gray-900 bg-blue-50/40"
                   : "border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50"
@@ -143,13 +144,13 @@ export default function TabBar({
               {isDragOver && (
                 <span className="absolute inset-y-0 left-0 w-0.5 bg-blue-500" aria-hidden />
               )}
-              {isDoc ? <FileText size={12} /> : <Table2 size={12} />}
-              <span className="max-w-[160px] truncate">{tab.label}</span>
+              {isDoc ? <FileText size={12} className="shrink-0" /> : <Table2 size={12} className="shrink-0" />}
+              <span className="flex-1 min-w-0 truncate">{tab.label}</span>
               {(!canCloseTab || canCloseTab(tab.id)) && (
                 <span
                   role="button"
                   onClick={(e) => { e.stopPropagation(); onCloseTab(tab.id); }}
-                  className="ml-1 p-0.5 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-600"
+                  className="shrink-0 p-0.5 rounded hover:bg-gray-200 text-gray-400 hover:text-gray-600"
                 >
                   <X size={10} />
                 </span>

@@ -4,6 +4,9 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { createReactBlockSpec } from "@blocknote/react";
 import { loadDataset, saveDataset, Dataset, registerDataset, getDatasetMeta, renameDataset } from "@/lib/storage";
 import { Import, BarChart2, ChevronDown, Plus, ExternalLink } from "lucide-react";
+import SheetPickerModal from "../SheetPickerModal";
+import type { SheetSummary } from "@/lib/excel-import";
+import { parseCsvAllRows } from "@/lib/csv-parse";
 
 import jspreadsheet from "jspreadsheet-ce";
 import "jspreadsheet-ce/dist/jspreadsheet.css";
@@ -21,26 +24,6 @@ const colLetter = (i: number): string => {
   }
   return result;
 };
-
-function parseCsvAllRows(text: string): Dataset {
-  const lines = text.trim().split(/\r?\n/).filter(Boolean);
-  if (!lines.length) return { headers: [], rows: [] };
-  const parseRow = (line: string): string[] => {
-    const res: string[] = [];
-    let buf = "", inQ = false;
-    for (let i = 0; i < line.length; i++) {
-      const c = line[i];
-      if (c === '"') { if (inQ && line[i+1] === '"') { buf += '"'; i++; } else inQ = !inQ; }
-      else if (c === "," && !inQ) { res.push(buf); buf = ""; }
-      else buf += c;
-    }
-    res.push(buf);
-    return res;
-  };
-  const rows = lines.map(parseRow);
-  const colCount = Math.max(...rows.map((r) => r.length));
-  return { headers: Array.from({ length: colCount }, (_, i) => colLetter(i)), rows };
-}
 
 // ── テーブル設定（タイトル等） ─────────────────────────────────────────
 
@@ -533,21 +516,51 @@ function TableView({
     };
   }, [collapsed, initData, persistData]);
 
-  // ── CSV インポート ──
+  // ── ファイルインポート（CSV / Excel） ──
 
-  const handleCsvImport = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  const [pendingSheets, setPendingSheets] = useState<{
+    sheets: SheetSummary[];
+    getDataset: (name: string) => Dataset;
+  } | null>(null);
+
+  const applyImportedDataset = useCallback((parsed: Dataset) => {
+    if (!parsed.rows.length) return;
+    const cells = parsed.rows.length * (parsed.headers.length || parsed.rows[0]?.length || 0);
+    if (cells > 100_000) {
+      const ok = window.confirm(
+        `取り込むデータが大きいです（約 ${cells.toLocaleString()} セル）。\n` +
+        `ブラウザの保存容量を超えると保存に失敗する可能性があります。続行しますか？`,
+      );
+      if (!ok) return;
+    }
+    saveDataset(datasetId, parsed);
+    setInitData(parsed);
+  }, [datasetId]);
+
+  const handleFileImport = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    e.target.value = "";
     if (!file) return;
+    const ext = file.name.toLowerCase().split(".").pop() ?? "";
+    if (ext === "xlsx" || ext === "xls") {
+      const { parseExcelFile } = await import("@/lib/excel-import");
+      const result = await parseExcelFile(file);
+      const nonEmpty = result.sheets.filter((s) => s.rows > 0 && s.cols > 0);
+      if (nonEmpty.length === 0) return;
+      if (nonEmpty.length === 1) {
+        applyImportedDataset(result.getDataset(nonEmpty[0].name));
+      } else {
+        setPendingSheets({ sheets: nonEmpty, getDataset: result.getDataset });
+      }
+      return;
+    }
     const reader = new FileReader();
     reader.onload = (ev) => {
       const parsed = parseCsvAllRows(ev.target?.result as string);
-      if (!parsed.rows.length) return;
-      saveDataset(datasetId, parsed);
-      setInitData(parsed);
+      applyImportedDataset(parsed);
     };
     reader.readAsText(file, "UTF-8");
-    e.target.value = "";
-  }, [datasetId]);
+  }, [applyImportedDataset]);
 
   const addRow = useCallback(() => { instanceRef.current?.insertRow(); }, []);
   const addCol = useCallback(() => { instanceRef.current?.insertColumn(); }, []);
@@ -645,12 +658,30 @@ function TableView({
               </button>
             </>
           )}
-          <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={handleCsvImport} className="hidden" />
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            onChange={handleFileImport}
+            className="hidden"
+          />
         </div>
 
       {/* ── スプレッドシート本体 ── */}
       {!collapsed && (
         <div ref={containerRef} className="overflow-auto" />
+      )}
+
+      {pendingSheets && (
+        <SheetPickerModal
+          sheets={pendingSheets.sheets}
+          onSelect={(name) => {
+            const ds = pendingSheets.getDataset(name);
+            setPendingSheets(null);
+            applyImportedDataset(ds);
+          }}
+          onCancel={() => setPendingSheets(null)}
+        />
       )}
     </div>
   );

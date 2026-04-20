@@ -9,12 +9,16 @@ interface SyncContextValue {
   isSupported: boolean;
   /** フォルダ接続中か */
   isConnected: boolean;
+  /** ハンドルは保存済みだが権限が切れている状態（再接続が必要） */
+  needsReconnect: boolean;
   /** 同期ステータス */
   status: SyncStatus;
-  /** 接続中のフォルダ名 */
+  /** 接続中（または再接続待ち）のフォルダ名 */
   folderName: string | null;
-  /** フォルダ選択ダイアログを開いて接続 */
+  /** フォルダ選択ダイアログを開いて接続（新規フォルダ選択） */
   connect: () => Promise<void>;
+  /** 保存済みハンドルの権限を再取得して再接続 */
+  reconnectExisting: () => Promise<void>;
   /** 切断 */
   disconnect: () => void;
   /** 変更を通知（localStorage キーを渡す） */
@@ -37,27 +41,44 @@ export function useSyncContext(): SyncContextValue {
 
 export function SyncProvider({ children }: { children: ReactNode }) {
   const [isConnected, setIsConnected] = useState(false);
+  const [needsReconnect, setNeedsReconnect] = useState(false);
   const [status, setStatus] = useState<SyncStatus>("disconnected");
   const [folderName, setFolderName] = useState<string | null>(null);
+  const [isInitializing, setIsInitializing] = useState(true);
   const syncManagerRef = useRef<SyncManager | null>(null);
+  const pendingHandleRef = useRef<FileSystemDirectoryHandle | null>(null);
   const isSupported = FSProvider.isSupported();
 
-  // SyncManager の初期化
+  // SyncManager の初期化 + 起動時の自動同期
   useEffect(() => {
     const manager = new SyncManager(fsProvider);
     syncManagerRef.current = manager;
     const unsub = manager.onStatusChange(setStatus);
 
-    // 保存済みハンドルで自動再接続を試みる
     (async () => {
-      const handle = await loadDirHandle();
-      if (handle) {
-        const ok = await fsProvider.reconnect(handle);
+      try {
+        const handle = await loadDirHandle();
+        if (!handle) return;
+
+        // 権限が既に付与されている場合のみサイレント再接続
+        const ok = await fsProvider.reconnect(handle, true);
         if (ok) {
-          setIsConnected(true);
+          // 起動時は常にフォルダから読み込む（他端末の更新を反映）
+          const hasProject = await manager.hasProjectFile();
+          if (hasProject) {
+            await manager.loadFromFolder();
+          }
           setFolderName(fsProvider.getFolderName());
+          setIsConnected(true);
           manager.start();
+        } else {
+          // 権限切れ → 再接続待ち
+          pendingHandleRef.current = handle;
+          setFolderName(handle.name);
+          setNeedsReconnect(true);
         }
+      } finally {
+        setIsInitializing(false);
       }
     })();
 
@@ -78,6 +99,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     if (handle) await saveDirHandle(handle);
 
     setIsConnected(true);
+    setNeedsReconnect(false);
     setFolderName(fsProvider.getFolderName());
     manager.start();
 
@@ -94,11 +116,35 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const reconnectExisting = useCallback(async () => {
+    const manager = syncManagerRef.current;
+    const handle = pendingHandleRef.current;
+    if (!manager || !handle) return;
+
+    const ok = await fsProvider.reconnect(handle, false);
+    if (!ok) return;
+
+    setIsConnected(true);
+    setNeedsReconnect(false);
+    setFolderName(fsProvider.getFolderName());
+    manager.start();
+
+    const hasProject = await manager.hasProjectFile();
+    if (hasProject) {
+      await manager.loadFromFolder();
+      window.location.reload();
+    } else {
+      await manager.saveToFolder();
+    }
+  }, []);
+
   const disconnect = useCallback(() => {
     syncManagerRef.current?.stop();
     fsProvider.disconnect();
     clearDirHandle();
+    pendingHandleRef.current = null;
     setIsConnected(false);
+    setNeedsReconnect(false);
     setFolderName(null);
   }, []);
 
@@ -127,9 +173,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       value={{
         isSupported,
         isConnected,
+        needsReconnect,
         status,
         folderName,
         connect,
+        reconnectExisting,
         disconnect,
         notifyChange,
         saveChartImage,
@@ -137,7 +185,13 @@ export function SyncProvider({ children }: { children: ReactNode }) {
         importZip,
       }}
     >
-      {children}
+      {isInitializing ? (
+        <div className="flex h-screen items-center justify-center bg-white text-sm text-gray-500">
+          保存先フォルダから読み込み中...
+        </div>
+      ) : (
+        children
+      )}
     </SyncContext.Provider>
   );
 }

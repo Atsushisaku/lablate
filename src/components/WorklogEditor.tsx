@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useCallback, useRef } from "react";
+import { useEffect, useCallback, useRef, useState } from "react";
 import { BlockNoteSchema, defaultBlockSpecs, PartialBlock, filterSuggestionItems } from "@blocknote/core";
 import { BlockNoteView } from "@blocknote/mantine";
 import {
@@ -10,7 +10,9 @@ import {
 } from "@blocknote/react";
 import "@blocknote/core/fonts/inter.css";
 import "@blocknote/mantine/style.css";
-import { loadDoc, saveDoc, registerDataset, loadTree, ROOT_ID, collectUsedDatasetIds, trashDataset } from "@/lib/storage";
+import { loadDoc, saveDoc, saveDataset, registerDataset, loadTree, ROOT_ID, collectUsedDatasetIds, trashDataset, Dataset } from "@/lib/storage";
+import SheetPickerModal from "./SheetPickerModal";
+import type { SheetSummary } from "@/lib/excel-import";
 import { useSyncContext } from "@/lib/storage/sync-context";
 import { csvTableBlockSpec } from "./blocks/CsvTableBlock";
 import { chartBlockSpec } from "./blocks/ChartBlock";
@@ -225,14 +227,66 @@ export default function WorklogEditor({ pageId, onEditorReady }: Props) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editor]);
 
+  // ── CSV/Excel ファイルをドロップ → 新規テーブルブロックを挿入 ──
+  const [pendingSheets, setPendingSheets] = useState<{
+    sheets: SheetSummary[];
+    getDataset: (name: string) => Dataset;
+  } | null>(null);
+
+  const insertDatasetBlock = useCallback((ds: Dataset) => {
+    if (!ds.rows.length) return;
+    const cells = ds.rows.length * (ds.headers.length || ds.rows[0]?.length || 0);
+    if (cells > 100_000) {
+      const ok = window.confirm(
+        `取り込むデータが大きいです（約 ${cells.toLocaleString()} セル）。\n` +
+        `ブラウザの保存容量を超えると保存に失敗する可能性があります。続行しますか？`,
+      );
+      if (!ok) return;
+    }
+    const datasetId = crypto.randomUUID();
+    registerDataset(datasetId, undefined, pageId);
+    saveDataset(datasetId, ds);
+    insertBlock({ type: "csvTable", props: { datasetId } });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageId]);
+
+  const handleSpreadsheetFile = useCallback(async (file: File) => {
+    const ext = file.name.toLowerCase().split(".").pop() ?? "";
+    if (ext === "xlsx" || ext === "xls") {
+      const { parseExcelFile } = await import("@/lib/excel-import");
+      const result = await parseExcelFile(file);
+      const nonEmpty = result.sheets.filter((s) => s.rows > 0 && s.cols > 0);
+      if (nonEmpty.length === 0) return;
+      if (nonEmpty.length === 1) {
+        insertDatasetBlock(result.getDataset(nonEmpty[0].name));
+      } else {
+        setPendingSheets({ sheets: nonEmpty, getDataset: result.getDataset });
+      }
+      return;
+    }
+    if (ext === "csv") {
+      const text = await file.text();
+      const { parseCsvAllRows } = await import("@/lib/csv-parse");
+      insertDatasetBlock(parseCsvAllRows(text));
+    }
+  }, [insertDatasetBlock]);
+
   const onEditorDrop = useCallback((e: React.DragEvent) => {
     const file = e.dataTransfer.files[0];
-    if (file?.type.startsWith("image/")) {
+    if (!file) return;
+    if (file.type.startsWith("image/")) {
       e.preventDefault();
       e.stopPropagation();
       handleImageFile(file);
+      return;
     }
-  }, [handleImageFile]);
+    const ext = file.name.toLowerCase().split(".").pop() ?? "";
+    if (ext === "xlsx" || ext === "xls" || ext === "csv") {
+      e.preventDefault();
+      e.stopPropagation();
+      handleSpreadsheetFile(file);
+    }
+  }, [handleImageFile, handleSpreadsheetFile]);
 
   useEffect(() => {
     const el = editorWrapRef.current;
@@ -382,7 +436,7 @@ export default function WorklogEditor({ pageId, onEditorReady }: Props) {
                     const node = tree[nodeId];
                     if (!node) return;
                     if (nodeId !== ROOT_ID && nodeId !== pageId) {
-                      pages.push({ id: nodeId, title: node.title || "無題のページ" });
+                      pages.push({ id: nodeId, title: node.title || "新規ページ" });
                     }
                     node.children.forEach(collect);
                   };
@@ -405,6 +459,18 @@ export default function WorklogEditor({ pageId, onEditorReady }: Props) {
           }
         />
       </BlockNoteView>
+
+      {pendingSheets && (
+        <SheetPickerModal
+          sheets={pendingSheets.sheets}
+          onSelect={(name) => {
+            const ds = pendingSheets.getDataset(name);
+            setPendingSheets(null);
+            insertDatasetBlock(ds);
+          }}
+          onCancel={() => setPendingSheets(null)}
+        />
+      )}
     </div>
   );
 }

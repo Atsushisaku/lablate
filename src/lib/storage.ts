@@ -19,7 +19,7 @@ export function createDefaultTree(): PageTree {
   const firstPageId = crypto.randomUUID();
   return {
     [ROOT_ID]: { id: ROOT_ID, title: "Home", children: [firstPageId] },
-    [firstPageId]: { id: firstPageId, title: "無題のページ", children: [] },
+    [firstPageId]: { id: firstPageId, title: "新規ページ", children: [] },
   };
 }
 
@@ -28,7 +28,17 @@ export function loadTree(): PageTree {
   const saved = localStorage.getItem(TREE_KEY);
   if (!saved) return createDefaultTree();
   try {
-    return JSON.parse(saved) as PageTree;
+    const parsed = JSON.parse(saved) as PageTree;
+    // 旧デフォルトタイトル「無題のページ」→「新規ページ」
+    let migrated = false;
+    for (const id of Object.keys(parsed)) {
+      if (parsed[id]?.title === "無題のページ") {
+        parsed[id] = { ...parsed[id], title: "新規ページ" };
+        migrated = true;
+      }
+    }
+    if (migrated) saveTree(parsed);
+    return parsed;
   } catch {
     return createDefaultTree();
   }

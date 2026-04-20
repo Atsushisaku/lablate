@@ -77,7 +77,7 @@ export default function Sidebar({
   onEmptyDatasetTrash,
 }: Props) {
   const root = tree[ROOT_ID];
-  const { isSupported, isConnected, folderName, connect, disconnect, exportZip, importZip } = useSyncContext();
+  const { isSupported, isConnected, needsReconnect, folderName, connect, reconnectExisting, disconnect, exportZip, importZip } = useSyncContext();
   const importRef = useRef<HTMLInputElement>(null);
   const navRef = useRef<HTMLElement>(null);
   const [trashOpen, setTrashOpen] = useState(false);
@@ -480,6 +480,15 @@ export default function Sidebar({
                 <Unplug size={12} />
               </button>
             </div>
+          ) : needsReconnect ? (
+            <button
+              onClick={reconnectExisting}
+              className="flex items-center gap-1.5 w-full text-xs text-amber-700 bg-amber-50 hover:bg-amber-100 rounded px-1.5 py-1 transition-colors"
+              title="クリックでフォルダへの権限を再取得"
+            >
+              <FolderSync size={13} className="shrink-0 text-amber-500" />
+              <span className="truncate flex-1 text-left" title={folderName ?? ""}>再接続: {folderName}</span>
+            </button>
           ) : (
             <button
               onClick={connect}

@@ -90,7 +90,20 @@ export default function WorklogPage() {
 
   // ── 初期化 ──
   useEffect(() => {
-    const t = loadTree();
+    let t = loadTree();
+    // ツリーが空なら既定ページを自動生成（全消し状態で開かれた場合の自動復旧）
+    if (!t[ROOT_ID]) {
+      t = createDefaultTree();
+      saveTree(t);
+    } else if (t[ROOT_ID].children.length === 0) {
+      const newId = crypto.randomUUID();
+      t = {
+        ...t,
+        [ROOT_ID]: { ...t[ROOT_ID], children: [newId] },
+        [newId]: { id: newId, title: "新規ページ", children: [] },
+      };
+      saveTree(t);
+    }
     setTree(t);
     const firstPage = getFirstPage(t);
     setSelectedId(firstPage);
@@ -106,8 +119,17 @@ export default function WorklogPage() {
     }
 
     const saved = loadTabState();
-    const firstDocTab = makeDocTab(firstPage, t[firstPage]?.title ?? "無題のページ");
+    const firstDocTab = makeDocTab(firstPage, t[firstPage]?.title ?? "新規ページ");
     if (saved && saved.panes.length > 0) {
+      // ドキュメントタブのラベルをツリーのタイトルと同期（既存データ「無題のページ」対策）
+      saved.panes = saved.panes.map((p) => ({
+        ...p,
+        tabs: p.tabs.map((tab) => {
+          if (tab.type !== "document") return tab;
+          const title = t[tab.pageId]?.title;
+          return title ? { ...tab, label: title } : tab;
+        }),
+      }));
       const docTabId = `doc-${firstPage}`;
       const hasDocTab = saved.panes.some((p) => p.tabs.some((tab) => tab.id === docTabId));
       if (!hasDocTab) {
@@ -160,7 +182,7 @@ export default function WorklogPage() {
       // アクティブペイン（なければ先頭）に追加
       const target = prev.panes.find((p) => p.id === prev.activePaneId) ?? prev.panes[0];
       if (!target) return prev;
-      const pageTitle = tree[pageId]?.title ?? "無題のページ";
+      const pageTitle = tree[pageId]?.title ?? "新規ページ";
       const newTab = makeDocTab(pageId, pageTitle);
       const lastDocIdx = target.tabs.reduce((acc, t, i) => (t.type === "document" ? i : acc), -1);
       const newTabs = [...target.tabs];
@@ -228,10 +250,21 @@ export default function WorklogPage() {
   }, []);
 
   const handleDelete = useCallback((id: string) => {
+    let autoNewId: string | null = null;
     setTree((prev) => {
-      const next = trashPage(prev, id);
+      let next = trashPage(prev, id);
+      // 全ページ削除 → 既定ページを自動生成（空状態での操作を防ぐ）
+      if (next[ROOT_ID] && next[ROOT_ID].children.length === 0) {
+        autoNewId = crypto.randomUUID();
+        next = {
+          ...next,
+          [ROOT_ID]: { ...next[ROOT_ID], children: [autoNewId] },
+          [autoNewId]: { id: autoNewId, title: "新規ページ", children: [] },
+        };
+      }
       saveTree(next);
       setSelectedId((cur) => {
+        if (autoNewId) return autoNewId;
         if (cur === id || !next[cur]) return getFirstPage(next);
         return cur;
       });
@@ -252,7 +285,18 @@ export default function WorklogPage() {
       if (nextPanes.length === 0 && prev.panes.length > 0) {
         nextPanes.push({ id: prev.panes[0].id, tabs: [], activeTabId: "" });
       }
-      const activePaneId = nextPanes.find((p) => p.id === prev.activePaneId)?.id ?? nextPanes[0]?.id ?? "";
+      // 自動生成ページのドキュメントタブを追加しアクティブ化
+      if (autoNewId) {
+        const newTab = makeDocTab(autoNewId, "新規ページ");
+        if (nextPanes[0]) {
+          nextPanes[0] = { ...nextPanes[0], tabs: [newTab, ...nextPanes[0].tabs], activeTabId: newTab.id };
+        } else {
+          nextPanes.push({ id: crypto.randomUUID(), tabs: [newTab], activeTabId: newTab.id });
+        }
+      }
+      const activePaneId = autoNewId
+        ? nextPanes[0].id
+        : (nextPanes.find((p) => p.id === prev.activePaneId)?.id ?? nextPanes[0]?.id ?? "");
       const next: TabState = { panes: nextPanes, activePaneId };
       saveTabState(next);
       return next;

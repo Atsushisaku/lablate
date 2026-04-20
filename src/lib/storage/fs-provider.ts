@@ -49,8 +49,10 @@ export class FSProvider {
     }
   }
 
-  /** 保存済みハンドルで権限を再取得（ブラウザ再起動後） */
-  async reconnect(handle: FileSystemDirectoryHandle): Promise<boolean> {
+  /** 保存済みハンドルで権限を再取得（ブラウザ再起動後）
+   *  silent=true のとき requestPermission を呼ばない（ユーザージェスチャー不要パス）
+   */
+  async reconnect(handle: FileSystemDirectoryHandle, silent = false): Promise<boolean> {
     try {
       const permission = await (handle as unknown as { queryPermission(d: { mode: string }): Promise<string> })
         .queryPermission({ mode: "readwrite" });
@@ -58,6 +60,7 @@ export class FSProvider {
         this.dirHandle = handle;
         return true;
       }
+      if (silent) return false;
       const request = await (handle as unknown as { requestPermission(d: { mode: string }): Promise<string> })
         .requestPermission({ mode: "readwrite" });
       if (request === "granted") {
